@@ -1,0 +1,828 @@
+/*
+   NextBSDServer - display server for the NextBSD WindowServer
+
+   Copyright (C) 2020 Free Software Foundation, Inc.
+   Copyright (C) 2026 Joseph Maloney
+
+   Structure adapted from the Wayland backend (WaylandServer.m) by
+   Sergio L. Pascual <slp@sinrega.org> and
+   Riccardo Canalicchio <riccardo.canalicchio(at)gmail.com>.
+
+   This file is part of the GNU Objective C Backend Library.
+
+   This library is free software; you can redistribute it and/or
+   modify it under the terms of the GNU Lesser General Public
+   License as published by the Free Software Foundation; either
+   version 2.1 of the License, or (at your option) any later version.
+
+   This library is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Lesser General Public License for more details.
+
+   You should have received a copy of the GNU Lesser General Public
+   License along with this library; see the file COPYING.LIB.
+   If not, see <http://www.gnu.org/licenses/> or write to the
+   Free Software Foundation, 51 Franklin Street, Fifth Floor,
+   Boston, MA 02110-1301, USA.
+*/
+
+#include "config.h"
+#include <AppKit/AppKitExceptions.h>
+#include <AppKit/NSApplication.h>
+#include <AppKit/NSGraphics.h>
+#include <AppKit/DPSOperators.h>
+#include <AppKit/NSEvent.h>
+#include <AppKit/NSWindow.h>
+#include <AppKit/NSMenu.h>
+#include <Foundation/NSArray.h>
+#include <Foundation/NSConnection.h>
+#include <Foundation/NSDebug.h>
+#include <Foundation/NSException.h>
+#include <Foundation/NSMapTable.h>
+#include <Foundation/NSNotification.h>
+#include <Foundation/NSProcessInfo.h>
+#include <Foundation/NSRunLoop.h>
+#include <Foundation/NSUserDefaults.h>
+#include <Foundation/NSValue.h>
+
+#include <errno.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "nextbsd/NextBSDServer.h"
+#include "nextbsd/NextBSDCairoShmSurface.h"
+
+/* The connection, shared with the cairo surfaces. */
+static ws_connection_t *sharedConnection = NULL;
+
+static void
+event_handler(ws_connection_t *c, const ws_event_t *event, void *context)
+{
+  NextBSDServer *srv = (NextBSDServer *)context;
+
+  /* Never let an exception unwind through libWindowServerClient. */
+  NS_DURING
+    {
+      [srv handleEvent: event];
+    }
+  NS_HANDLER
+    {
+      NSLog(@"NextBSD: exception while handling a WindowServer %s event: %@",
+	    ws_event_name(event->hdr.type), localException);
+    }
+  NS_ENDHANDLER
+}
+
+/* Run loop modes the connection is watched in. */
+static NSArray *
+watchedModes(void)
+{
+  static NSArray *modes = nil;
+
+  if (modes == nil)
+    {
+      modes = [[NSArray alloc] initWithObjects: NSDefaultRunLoopMode,
+	NSConnectionReplyMode, NSModalPanelRunLoopMode,
+	NSEventTrackingRunLoopMode, nil];
+    }
+  return modes;
+}
+
+@implementation NextBSDServer
+
+/* Initialize AppKit backend */
++ (void) initializeBackend
+{
+  NSDebugLog(@"Initializing GNUstep NextBSD backend");
+  [GSDisplayServer setDefaultServerClass: [NextBSDServer class]];
+}
+
++ (ws_connection_t *) connection
+{
+  return sharedConnection;
+}
+
+- (ws_connection_t *) connection
+{
+  return conn;
+}
+
+- (id) initWithAttributes: (NSDictionary *)info
+{
+  NSString	 *name;
+  NSRunLoop	 *loop;
+  NSEnumerator	 *e;
+  NSString	 *mode;
+  NSUserDefaults *defs;
+  NSNotificationCenter *nc;
+
+  self = [super initWithAttributes: info];
+  if (self == nil)
+    return nil;
+
+  name = [[NSProcessInfo processInfo] processName];
+  conn = ws_connect([name UTF8String], 0);
+  if (conn == NULL)
+    {
+      [NSException raise: NSWindowServerCommunicationException
+		  format: @"Unable to connect to the NextBSD WindowServer: %s",
+		   strerror(errno)];
+    }
+  sharedConnection = conn;
+  screen = *ws_main_screen(conn);
+  windows = NSCreateMapTable(NSIntegerMapKeyCallBacks,
+			     NSNonOwnedPointerMapValueCallBacks, 32);
+  stack = [[NSMutableArray alloc] init];
+  pointerScreen = NSMakePoint(-1, -1);
+
+  defs = [NSUserDefaults standardUserDefaults];
+  scrollMultiplier = [defs floatForKey: @"GSMouseScrollMultiplier"];
+  if (scrollMultiplier < 0.0001f)
+    scrollMultiplier = 1.0f;
+  /* Precise (touchpad) scrolling arrives in pixels; NSScrollView scrolls
+     by lines, 10 pixels by default. */
+  scrollPixelsPerLine = [defs floatForKey: @"GSScrollPixelsPerLine"];
+  if (scrollPixelsPerLine < 0.0001f)
+    scrollPixelsPerLine = 10.0f;
+
+  /* Watch the event socket from the run loop, like the X11 and Wayland
+     servers do. NextBSD's main dispatch queue doesn't reliably wake
+     NSRunLoop, so nothing here uses libdispatch. */
+  loop = [NSRunLoop currentRunLoop];
+  e = [watchedModes() objectEnumerator];
+  while ((mode = [e nextObject]) != nil)
+    {
+      [loop addEvent: (void *)(intptr_t)ws_connection_fd(conn)
+		type: ET_RDESC
+	     watcher: (id<RunLoopEvents>)self
+	     forMode: mode];
+    }
+
+  nc = [NSNotificationCenter defaultCenter];
+  [nc addObserver: self
+	 selector: @selector(_appWillBecomeActive:)
+	     name: NSApplicationWillBecomeActiveNotification
+	   object: nil];
+  [nc addObserver: self
+	 selector: @selector(_appDidResignActive:)
+	     name: NSApplicationDidResignActiveNotification
+	   object: nil];
+
+  [self setupCursors];
+  /* ws_connect may have queued events while waiting for its welcome. */
+  [self scheduleDispatch];
+  NSDebugLLog(@"NextBSD", @"connected to WindowServer as client %u, "
+	      @"screen %ux%u", ws_client_id(conn), screen.width,
+	      screen.height);
+  return self;
+}
+
+- (void) closeServer
+{
+  NSEnumerator *e;
+  NSString	*mode;
+  NSRunLoop	*loop = [NSRunLoop currentRunLoop];
+
+  if (conn != NULL)
+    {
+      e = [watchedModes() objectEnumerator];
+      while ((mode = [e nextObject]) != nil)
+	{
+	  [loop removeEvent: (void *)(intptr_t)ws_connection_fd(conn)
+		       type: ET_RDESC
+		    forMode: mode
+			all: YES];
+	}
+    }
+  [super closeServer];
+}
+
+- (void) dealloc
+{
+  NSMapEnumerator  en;
+  void		  *key;
+  nextbsd_window_t *w;
+
+  [[NSNotificationCenter defaultCenter] removeObserver: self];
+  DESTROY(stack);
+  if (windows != nil)
+    {
+      en = NSEnumerateMapTable(windows);
+      while (NSNextMapEnumeratorPair(&en, &key, (void **)&w))
+	{
+	  [w->surface detach];
+	  free(w);
+	}
+      NSEndMapTableEnumeration(&en);
+      NSFreeMapTable(windows);
+      windows = nil;
+    }
+  if (conn != NULL)
+    {
+      if (sharedConnection == conn)
+	sharedConnection = NULL;
+      ws_disconnect(conn);
+      conn = NULL;
+    }
+  [super dealloc];
+}
+
+/* ---- the connection ---- */
+
+- (void) receivedEvent: (void *)data
+		  type: (RunLoopEventType)type
+		 extra: (void *)extra
+	       forMode: (NSString *)mode
+{
+  if (type == ET_RDESC)
+    {
+      [self dispatchEvents];
+    }
+}
+
+- (void) dispatchEvents
+{
+  int n;
+
+  dispatchScheduled = NO;
+  if (conn == NULL)
+    return;
+  n = ws_dispatch(conn, event_handler, self);
+  if (n < 0)
+    {
+      NSLog(@"NextBSD: lost the connection to WindowServer (%s)",
+	    strerror(errno));
+      exit(EXIT_FAILURE);
+    }
+}
+
+- (void) scheduleDispatch
+{
+  if (dispatchScheduled || conn == NULL || !ws_pending(conn))
+    return;
+  dispatchScheduled = YES;
+  [self performSelector: @selector(dispatchEvents)
+	     withObject: nil
+	     afterDelay: 0.0
+		inModes: watchedModes()];
+}
+
+/* ---- activation requested by the app ---- */
+
+- (void) _appWillBecomeActive: (NSNotification *)n
+{
+  if (!serverActivating && conn != NULL)
+    {
+      ws_activate(conn);
+    }
+}
+
+- (void) _appDidResignActive: (NSNotification *)n
+{
+  if (!serverDeactivating && conn != NULL)
+    {
+      ws_deactivate(conn);
+    }
+}
+
+/* ---- helpers ---- */
+
+- (nextbsd_window_t *) windowWithNumber: (int)win
+{
+  if (windows == nil || win <= 0)
+    return NULL;
+  return NSMapGet(windows, (void *)(intptr_t)win);
+}
+
+- (CGFloat) screenHeight
+{
+  return (CGFloat)screen.height;
+}
+
+- (ws_rect_t) wsRectFromNSRect: (NSRect)r
+{
+  ws_rect_t w;
+
+  w.x = (int32_t)NSMinX(r);
+  w.width = (int32_t)NSWidth(r);
+  w.height = (int32_t)NSHeight(r);
+  w.y = (int32_t)([self screenHeight] - NSMaxY(r));
+  if (w.width < 1)
+    w.width = 1;
+  if (w.height < 1)
+    w.height = 1;
+  return w;
+}
+
+- (NSRect) nsRectFromWSRect: (ws_rect_t)r
+{
+  return NSMakeRect(r.x, [self screenHeight] - r.y - r.height,
+		    r.width, r.height);
+}
+
+/* WindowServer flags for a window, from what libs-gui knows about it. */
+- (void) updateFlags: (nextbsd_window_t *)w
+{
+  static Class	menuPanelClass = Nil;
+  NSWindow	*nswin = GSWindowWithNumber(w->number);
+  uint32_t	 flags = 0;
+
+  if (menuPanelClass == Nil)
+    menuPanelClass = NSClassFromString(@"NSMenuPanel");
+
+  /* Menus never take the key window from the app's document windows. */
+  if (w->level == NSMainMenuWindowLevel
+      || w->level == NSSubmenuWindowLevel
+      || w->level == NSPopUpMenuWindowLevel
+      || (menuPanelClass != Nil && [nswin isKindOfClass: menuPanelClass])
+      || (nswin != nil && [nswin canBecomeKeyWindow] == NO))
+    {
+      flags |= WS_WINDOW_NO_KEY;
+    }
+  if (w->ignoresMouse)
+    flags |= WS_WINDOW_IGNORES_MOUSE;
+  if (flags != w->flags)
+    {
+      w->flags = flags;
+      ws_window_set_flags(conn, w->number, flags);
+    }
+}
+
+/* Tell the NSWindow its frame changed (GSAppKitWindowMoved/Resized). */
+- (void) _notifyFrame: (nextbsd_window_t *)w post: (BOOL)post
+{
+  NSWindow *nswin = GSWindowWithNumber(w->number);
+  NSRect    old;
+  NSEvent  *ev = nil;
+
+  if (nswin == nil)
+    return;
+  old = [nswin frame];
+  if (!NSEqualSizes(old.size, w->frame.size))
+    {
+      /* A resize event also moves the origin. */
+      ev = [NSEvent otherEventWithType: NSAppKitDefined
+			      location: w->frame.origin
+			 modifierFlags: 0
+			     timestamp: 0
+			  windowNumber: w->number
+			       context: GSCurrentContext()
+			       subtype: GSAppKitWindowResized
+				 data1: NSWidth(w->frame)
+				 data2: NSHeight(w->frame)];
+    }
+  else if (!NSEqualPoints(old.origin, w->frame.origin))
+    {
+      ev = [NSEvent otherEventWithType: NSAppKitDefined
+			      location: NSZeroPoint
+			 modifierFlags: 0
+			     timestamp: 0
+			  windowNumber: w->number
+			       context: GSCurrentContext()
+			       subtype: GSAppKitWindowMoved
+				 data1: NSMinX(w->frame)
+				 data2: NSMinY(w->frame)];
+    }
+  if (ev == nil)
+    return;
+  if (post)
+    [self postEvent: ev atStart: NO];
+  else
+    [nswin sendEvent: ev];
+}
+
+/* ---- screens ---- */
+
+- (BOOL) handlesWindowDecorations
+{
+  /* libs-gui draws title bars and resize bars itself. */
+  return NO;
+}
+
+- (void) restrictWindow: (int)win toImage: (NSImage *)image
+{
+}
+
+- (NSRect) boundsForScreen: (int)aScreen
+{
+  return NSMakeRect(0, 0, screen.width, screen.height);
+}
+
+- (NSSize) resolutionForScreen: (int)aScreen
+{
+  if (screen.mm_width > 0 && screen.mm_height > 0)
+    {
+      return NSMakeSize(screen.width * 25.4 / screen.mm_width,
+			screen.height * 25.4 / screen.mm_height);
+    }
+  return NSMakeSize(72, 72);
+}
+
+- (NSWindowDepth) windowDepthForScreen: (int)aScreen
+{
+  return (_GSRGBBitValue | 8);
+}
+
+- (const NSWindowDepth *) availableDepthsForScreen: (int)aScreen
+{
+  NSWindowDepth *depths;
+
+  depths = NSZoneMalloc(NSDefaultMallocZone(), sizeof(NSWindowDepth) * 2);
+  depths[0] = (_GSRGBBitValue | 8);
+  depths[1] = 0;
+  return depths;
+}
+
+- (NSArray *) screenList
+{
+  return [NSArray arrayWithObject: [NSNumber numberWithInt: screen.screen_id]];
+}
+
+- (void) setScreenInfo: (const ws_screen_info_t *)info
+{
+  screen = *info;
+}
+
+- (void *) serverDevice
+{
+  return conn;
+}
+
+- (void *) windowDevice: (int)win
+{
+  return [self windowWithNumber: win];
+}
+
+- (void) beep
+{
+  NSDebugLLog(@"NextBSD", @"beep");
+}
+
+@end
+
+/* ----------------------------------------------------------------------- */
+
+@implementation NextBSDServer (WindowOps)
+
+- (int) window: (NSRect)frame
+	      : (NSBackingStoreType)type
+	      : (unsigned int)style
+	      : (int)aScreen
+{
+  nextbsd_window_t *w;
+  ws_rect_t	    r;
+  uint32_t	    number;
+
+  if (NSWidth(frame) < 1)
+    frame.size.width = 1;
+  if (NSHeight(frame) < 1)
+    frame.size.height = 1;
+  r = [self wsRectFromNSRect: frame];
+  number = ws_window_create(conn, &r, NSNormalWindowLevel, 0, "");
+  if (number == 0)
+    {
+      NSLog(@"NextBSD: WindowServer didn't create a window: %s",
+	    strerror(errno));
+      return 0;
+    }
+  w = calloc(1, sizeof(*w));
+  w->number = (int)number;
+  w->frame = frame;
+  w->level = NSNormalWindowLevel;
+  w->type = type;
+  NSMapInsert(windows, (void *)(intptr_t)w->number, w);
+  [self _setWindowOwnedByServer: w->number];
+  NSDebugLLog(@"NextBSD", @"window %d created: %@", w->number,
+	      NSStringFromRect(frame));
+  return w->number;
+}
+
+- (void) termwindow: (int)win
+{
+  nextbsd_window_t *w = [self windowWithNumber: win];
+
+  if (w == NULL)
+    return;
+  [w->surface detach];
+  w->surface = nil;
+  ws_window_destroy(conn, w->number);
+  NSMapRemove(windows, (void *)(intptr_t)win);
+  [self _stackRemove: win];
+  if (pointerWindow == win)
+    pointerWindow = 0;
+  free(w);
+}
+
+- (int) nativeWindow: (void *)winref
+		    : (NSRect *)frame
+		    : (NSBackingStoreType *)type
+		    : (unsigned int *)style
+		    : (int *)aScreen
+{
+  return 0;
+}
+
+- (void) stylewindow: (unsigned int)style : (int)win
+{
+}
+
+- (void) windowbacking: (NSBackingStoreType)type : (int)win
+{
+  nextbsd_window_t *w = [self windowWithNumber: win];
+
+  if (w != NULL)
+    w->type = type;
+}
+
+- (void) titlewindow: (NSString *)title : (int)win
+{
+  nextbsd_window_t *w = [self windowWithNumber: win];
+
+  if (w == NULL)
+    return;
+  ws_window_set_title(conn, w->number, title ? [title UTF8String] : "");
+}
+
+- (void) miniwindow: (int)win
+{
+  nextbsd_window_t *w = [self windowWithNumber: win];
+
+  /* The app draws its own miniwindow; hide the real one. */
+  if (w == NULL)
+    return;
+  w->miniaturized = YES;
+  w->visible = NO;
+  [self _stackRemove: w->number];
+  ws_window_order(conn, w->number, WS_ORDER_OUT, 0);
+}
+
+- (BOOL) hideApplication: (int)win
+{
+  /* libs-gui orders the windows out itself; WindowServer hears about it
+     through the ordering and the deactivation. */
+  return NO;
+}
+
+- (BOOL) appOwnsMiniwindow
+{
+  return YES;
+}
+
+- (void) setWindowdevice: (int)win forContext: (NSGraphicsContext *)ctxt
+{
+  nextbsd_window_t *w = [self windowWithNumber: win];
+  int		    height;
+
+  if (w == NULL)
+    return;
+  height = (int)NSHeight(w->frame);
+  if (height < 1)
+    height = 1;
+  GSSetDevice(ctxt, w, 0, height);
+  DPSinitmatrix(ctxt);
+  DPSinitclip(ctxt);
+}
+
+- (void) orderwindow: (int)op : (int)otherWin : (int)win
+{
+  nextbsd_window_t *w = [self windowWithNumber: win];
+
+  if (w == NULL)
+    return;
+  if (op == NSWindowOut)
+    {
+      w->visible = NO;
+      [self _stackRemove: w->number];
+      ws_window_order(conn, w->number, WS_ORDER_OUT, 0);
+      return;
+    }
+  [self updateFlags: w];
+  [self _stackPlace: w op: op relativeTo: otherWin];
+  w->visible = YES;
+  w->miniaturized = NO;
+  ws_window_order(conn, w->number,
+		  op == NSWindowBelow ? WS_ORDER_BELOW : WS_ORDER_ABOVE,
+		  otherWin > 0 ? (uint32_t)otherWin : 0);
+}
+
+- (void) movewindow: (NSPoint)loc : (int)win
+{
+  nextbsd_window_t *w = [self windowWithNumber: win];
+  NSRect	    frame;
+
+  if (w == NULL)
+    return;
+  frame = w->frame;
+  frame.origin = loc;
+  [self placewindow: frame : win];
+}
+
+- (void) placewindow: (NSRect)rect : (int)win
+{
+  nextbsd_window_t *w = [self windowWithNumber: win];
+  ws_rect_t	    r;
+
+  if (w == NULL)
+    return;
+  NSDebugLLog(@"NextBSD", @"placewindow %d: %@", win, NSStringFromRect(rect));
+  if (!NSEqualRects(rect, w->frame))
+    {
+      w->frame = rect;
+      r = [self wsRectFromNSRect: rect];
+      ws_window_set_frame(conn, w->number, &r);
+    }
+  /* WindowServer doesn't answer a frame change, so tell the window now. */
+  [self _notifyFrame: w post: NO];
+}
+
+- (NSRect) windowbounds: (int)win
+{
+  nextbsd_window_t *w = [self windowWithNumber: win];
+
+  return w != NULL ? w->frame : NSZeroRect;
+}
+
+- (void) setwindowlevel: (int)level : (int)win
+{
+  nextbsd_window_t *w = [self windowWithNumber: win];
+
+  if (w == NULL)
+    return;
+  if (w->level != level)
+    {
+      w->level = level;
+      /* libs-gui levels are WindowServer levels. */
+      ws_window_set_level(conn, w->number, level);
+      if (w->visible)
+	[self _stackPlace: w op: NSWindowAbove relativeTo: 0];
+    }
+  [self updateFlags: w];
+}
+
+- (int) windowlevel: (int)win
+{
+  nextbsd_window_t *w = [self windowWithNumber: win];
+
+  return w != NULL ? w->level : 0;
+}
+
+/*
+ * This app's visible windows, bottom to top, kept the way WindowServer
+ * stacks them: by level, then by order within a level.
+ */
+- (void) _stackRemove: (int)win
+{
+  NSUInteger i = [stack count];
+
+  while (i-- > 0)
+    {
+      if ([[stack objectAtIndex: i] intValue] == win)
+	[stack removeObjectAtIndex: i];
+    }
+}
+
+- (int) _stackLevelAt: (NSUInteger)i
+{
+  nextbsd_window_t *o = [self windowWithNumber:
+				[[stack objectAtIndex: i] intValue]];
+
+  return o != NULL ? o->level : 0;
+}
+
+- (void) _stackPlace: (nextbsd_window_t *)w op: (int)op relativeTo: (int)rel
+{
+  nextbsd_window_t *r = [self windowWithNumber: rel];
+  NSNumber	   *n = [NSNumber numberWithInt: w->number];
+  NSUInteger	    i, count;
+
+  [self _stackRemove: w->number];
+  count = [stack count];
+  if (r != NULL && r != w && r->visible && r->level == w->level)
+    {
+      i = [stack indexOfObject: [NSNumber numberWithInt: rel]];
+      if (i != NSNotFound)
+	{
+	  [stack insertObject: n atIndex: op == NSWindowBelow ? i : i + 1];
+	  return;
+	}
+    }
+  if (op == NSWindowBelow)
+    {
+      /* below the lowest window whose level is >= ours */
+      for (i = 0; i < count; i++)
+	if ([self _stackLevelAt: i] >= w->level)
+	  break;
+      [stack insertObject: n atIndex: i];
+    }
+  else
+    {
+      /* above the highest window whose level is <= ours */
+      for (i = count; i > 0; i--)
+	if ([self _stackLevelAt: i - 1] <= w->level)
+	  break;
+      [stack insertObject: n atIndex: i];
+    }
+}
+
+/* Front to back, like the X11 server's list. */
+- (NSArray *) windowlist
+{
+  return [[stack reverseObjectEnumerator] allObjects];
+}
+
+- (int) findWindowAt: (NSPoint)screenLocation
+	   windowRef: (int *)windowRef
+	   excluding: (int)win
+{
+  NSUInteger i = [stack count];
+
+  while (i-- > 0)
+    {
+      int		number = [[stack objectAtIndex: i] intValue];
+      nextbsd_window_t *w = [self windowWithNumber: number];
+
+      if (w == NULL || number == win || w->ignoresMouse)
+	continue;
+      if (NSPointInRect(screenLocation, w->frame))
+	{
+	  if (windowRef != NULL)
+	    *windowRef = number;
+	  return number;
+	}
+    }
+  if (windowRef != NULL)
+    *windowRef = 0;
+  return 0;
+}
+
+- (int) windowdepth: (int)win
+{
+  return 0;
+}
+
+- (void) setmaxsize: (NSSize)size : (int)win
+{
+}
+
+- (void) setminsize: (NSSize)size : (int)win
+{
+}
+
+- (void) setresizeincrements: (NSSize)size : (int)win
+{
+}
+
+- (void) flushwindowrect: (NSRect)rect : (int)win
+{
+  nextbsd_window_t *w = [self windowWithNumber: win];
+  NSRect	    r;
+
+  if (w == NULL || w->surface == nil)
+    return;
+  /* Window base coordinates -> top-left window pixels. */
+  r.origin.x = NSMinX(rect);
+  r.origin.y = NSHeight(w->frame) - NSMaxY(rect);
+  r.size = rect.size;
+  [w->surface handleExposeRect: r];
+}
+
+- (void) styleoffsets: (float *)l : (float *)r : (float *)t : (float *)b
+		     : (unsigned int)style
+{
+  /* No server decorations. */
+  *l = *r = *t = *b = 0.0;
+}
+
+- (void) docedited: (int)edited : (int)win
+{
+}
+
+- (void) setinputstate: (int)state : (int)win
+{
+  /* libs-gui draws the title bar state itself. */
+}
+
+- (void) setalpha: (float)alpha : (int)win
+{
+}
+
+- (void) setShadow: (BOOL)hasShadow : (int)win
+{
+}
+
+- (void) setParentWindow: (int)parentWin forChildWindow: (int)childWin
+{
+}
+
+- (void) setIgnoreMouse: (BOOL)ignoreMouse : (int)win
+{
+  nextbsd_window_t *w = [self windowWithNumber: win];
+
+  if (w == NULL)
+    return;
+  w->ignoresMouse = ignoreMouse;
+  [self updateFlags: w];
+}
+
+@end
