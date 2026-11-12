@@ -278,7 +278,7 @@ case $target_os in
 esac
 
 AC_ARG_ENABLE(server, 
-  [  --enable-server=SRV     Build server type: x11, win32, wayland, headless],,
+  [  --enable-server=SRV     Build server type: x11, win32, wayland, nextbsd, headless],,
   enable_server=$BUILD_SERVER)
 AC_ARG_ENABLE(graphics, 
   [  --enable-graphics=GPH   Build graphics: xlib, xdps, winlib, art, cairo, opal, headless],,
@@ -700,9 +700,20 @@ if test x"$BUILD_GRAPHICS" = "xcairo"; then
       fi
     fi
 AC_SUBST(WITH_EGL)
+    # NextBSD: WindowServer's client library, found through pkgconf.
+    if test $BUILD_SERVER = nextbsd; then
+      AC_MSG_RESULT(nextbsd)
+      PKG_CHECK_MODULES([WSCLIENT], [WindowServerClient],,
+        [AC_MSG_ERROR([**** No WindowServerClient. Install the NextBSD WindowServer client library.])])
+      CAIRO_LIBS="$CAIRO_LIBS $FONTCONFIG_LIBS $FREETYPE_LIBS $WSCLIENT_LIBS"
+      CAIRO_CFLAGS="$CAIRO_CFLAGS $FONTCONFIG_CFLAGS $WSCLIENT_CFLAGS"
+    fi
     LIBS="$CAIRO_LIBS $LIBS"
     CPPFLAGS="$CAIRO_CFLAGS $CPPFLAGS"
   fi
+fi
+if test $BUILD_SERVER = nextbsd -a x"$BUILD_GRAPHICS" != "xcairo"; then
+  AC_MSG_ERROR([nextbsd backend requires cairo])
 fi
 
 if test x"$BUILD_GRAPHICS" = "xxdps"; then
@@ -806,6 +817,7 @@ AH_TOP([
 #define SERVER_win32      2
 #define SERVER_wayland    3
 #define SERVER_headless   4
+#define SERVER_nextbsd    5
 #define GRAPHICS_xdps     0
 #define GRAPHICS_art      1
 #define GRAPHICS_xlib     2

@@ -50,6 +50,11 @@
 @interface WaylandServer (Initialize)
 + (void) initializeBackend;
 @end
+#elif BUILD_SERVER == SERVER_nextbsd
+#include <nextbsd/NextBSDServer.h>
+@interface NextBSDServer (Initialize)
++ (void) initializeBackend;
+@end
 #elif BUILD_SERVER == SERVER_headless
 #include <headless/HeadlessServer.h>
 @interface HeadlessServer (Initialize)
@@ -75,6 +80,8 @@
   [WIN32Server initializeBackend];
 #elif BUILD_SERVER == SERVER_wayland
   [WaylandServer initializeBackend];
+#elif BUILD_SERVER == SERVER_nextbsd
+  [NextBSDServer initializeBackend];
 #elif BUILD_SERVER == SERVER_headless
   [HeadlessServer initializeBackend];
 #else

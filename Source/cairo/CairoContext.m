@@ -79,6 +79,12 @@
 #  include "cairo/WaylandCairoShmSurface.h"
 #  define _CAIRO_GSTATE_CLASSNAME CairoGState
 #  define _CAIRO_SURFACE_CLASSNAME WaylandCairoShmSurface
+#elif BUILD_SERVER == SERVER_nextbsd
+#  include "nextbsd/NextBSDServer.h"
+#  include "cairo/CairoGState.h"
+#  include "nextbsd/NextBSDCairoShmSurface.h"
+#  define _CAIRO_GSTATE_CLASSNAME CairoGState
+#  define _CAIRO_SURFACE_CLASSNAME NextBSDCairoShmSurface
 #else
 #  error Invalid server for Cairo backend : non implemented
 #endif /* BUILD_SERVER */

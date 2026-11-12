@@ -5,6 +5,7 @@
 #define SERVER_win32      2
 #define SERVER_wayland    3
 #define SERVER_headless   4
+#define SERVER_nextbsd    5
 #define GRAPHICS_xdps     0
 #define GRAPHICS_art      1
 #define GRAPHICS_xlib     2

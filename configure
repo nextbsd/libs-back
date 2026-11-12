@@ -629,6 +629,8 @@ BACKEND_NAME
 WARN_FLAGS
 BUILD_SERVER
 BUILD_GRAPHICS
+WSCLIENT_LIBS
+WSCLIENT_CFLAGS
 WITH_EGL
 USE_WRASTER
 WITH_WRASTER
@@ -786,7 +788,9 @@ GLITZ_LIBS
 GLITZ_GLX_CFLAGS
 GLITZ_GLX_LIBS
 GLITZ_WGL_CFLAGS
-GLITZ_WGL_LIBS'
+GLITZ_WGL_LIBS
+WSCLIENT_CFLAGS
+WSCLIENT_LIBS'
 
 
 # Initialize some variables set by options.
@@ -1412,7 +1416,7 @@ Optional Features:
   --disable-option-checking  ignore unrecognized --enable/--with options
   --disable-FEATURE       do not include FEATURE (same as --enable-FEATURE=no)
   --enable-FEATURE[=ARG]  include FEATURE [ARG=yes]
-  --enable-server=SRV     Build server type: x11, win32, wayland, headless
+  --enable-server=SRV     Build server type: x11, win32, wayland, nextbsd, headless
   --enable-graphics=GPH   Build graphics: xlib, xdps, winlib, art, cairo, opal, headless
   --disable-glx           Disable GLX support
   --disable-xim           Disable XIM support
@@ -1490,6 +1494,10 @@ Some influential environment variables:
               C compiler flags for GLITZ_WGL, overriding pkg-config
   GLITZ_WGL_LIBS
               linker flags for GLITZ_WGL, overriding pkg-config
+  WSCLIENT_CFLAGS
+              C compiler flags for WSCLIENT, overriding pkg-config
+  WSCLIENT_LIBS
+              linker flags for WSCLIENT, overriding pkg-config
 
 Use these variables to override the choices made by 'configure' or to help
 it to find libraries and programs with nonstandard names/locations.
@@ -8412,9 +8420,90 @@ printf '%s\n' "#define HAVE_EGL 1" >>confdefs.h
       fi
     fi
 
+    # NextBSD: WindowServer's client library, found through pkgconf.
+    if test $BUILD_SERVER = nextbsd; then
+      { printf '%s\n' "$as_me:${as_lineno-$LINENO}: result: nextbsd" >&5
+printf '%s\n' "nextbsd" >&6; }
+
+pkg_failed=no
+{ printf '%s\n' "$as_me:${as_lineno-$LINENO}: checking for WindowServerClient" >&5
+printf %s "checking for WindowServerClient... " >&6; }
+
+if test -n "$WSCLIENT_CFLAGS"; then
+    pkg_cv_WSCLIENT_CFLAGS="$WSCLIENT_CFLAGS"
+ elif test -n "$PKG_CONFIG"; then
+    if test -n "$PKG_CONFIG" && \
+    { { printf '%s\n' "$as_me:${as_lineno-$LINENO}: \$PKG_CONFIG --exists --print-errors \"WindowServerClient\""; } >&5
+  ($PKG_CONFIG --exists --print-errors "WindowServerClient") 2>&5
+  ac_status=$?
+  printf '%s\n' "$as_me:${as_lineno-$LINENO}: \$? = $ac_status" >&5
+  test $ac_status = 0; }; then
+  pkg_cv_WSCLIENT_CFLAGS=`$PKG_CONFIG --cflags "WindowServerClient" 2>/dev/null`
+		      test "x$?" != "x0" && pkg_failed=yes
+else
+  pkg_failed=yes
+fi
+ else
+    pkg_failed=untried
+fi
+if test -n "$WSCLIENT_LIBS"; then
+    pkg_cv_WSCLIENT_LIBS="$WSCLIENT_LIBS"
+ elif test -n "$PKG_CONFIG"; then
+    if test -n "$PKG_CONFIG" && \
+    { { printf '%s\n' "$as_me:${as_lineno-$LINENO}: \$PKG_CONFIG --exists --print-errors \"WindowServerClient\""; } >&5
+  ($PKG_CONFIG --exists --print-errors "WindowServerClient") 2>&5
+  ac_status=$?
+  printf '%s\n' "$as_me:${as_lineno-$LINENO}: \$? = $ac_status" >&5
+  test $ac_status = 0; }; then
+  pkg_cv_WSCLIENT_LIBS=`$PKG_CONFIG --libs "WindowServerClient" 2>/dev/null`
+		      test "x$?" != "x0" && pkg_failed=yes
+else
+  pkg_failed=yes
+fi
+ else
+    pkg_failed=untried
+fi
+
+
+
+if test $pkg_failed = yes; then
+        { printf '%s\n' "$as_me:${as_lineno-$LINENO}: result: no" >&5
+printf '%s\n' "no" >&6; }
+
+if $PKG_CONFIG --atleast-pkgconfig-version 0.20; then
+        _pkg_short_errors_supported=yes
+else
+        _pkg_short_errors_supported=no
+fi
+        if test $_pkg_short_errors_supported = yes; then
+	        WSCLIENT_PKG_ERRORS=`$PKG_CONFIG --short-errors --print-errors --cflags --libs "WindowServerClient" 2>&1`
+        else
+	        WSCLIENT_PKG_ERRORS=`$PKG_CONFIG --print-errors --cflags --libs "WindowServerClient" 2>&1`
+        fi
+	# Put the nasty error message in config.log where it belongs
+	echo "$WSCLIENT_PKG_ERRORS" >&5
+
+	as_fn_error $? "**** No WindowServerClient. Install the NextBSD WindowServer client library." "$LINENO" 5
+elif test $pkg_failed = untried; then
+        { printf '%s\n' "$as_me:${as_lineno-$LINENO}: result: no" >&5
+printf '%s\n' "no" >&6; }
+	as_fn_error $? "**** No WindowServerClient. Install the NextBSD WindowServer client library." "$LINENO" 5
+else
+	WSCLIENT_CFLAGS=$pkg_cv_WSCLIENT_CFLAGS
+	WSCLIENT_LIBS=$pkg_cv_WSCLIENT_LIBS
+        { printf '%s\n' "$as_me:${as_lineno-$LINENO}: result: yes" >&5
+printf '%s\n' "yes" >&6; }
+
+fi
+      CAIRO_LIBS="$CAIRO_LIBS $FONTCONFIG_LIBS $FREETYPE_LIBS $WSCLIENT_LIBS"
+      CAIRO_CFLAGS="$CAIRO_CFLAGS $FONTCONFIG_CFLAGS $WSCLIENT_CFLAGS"
+    fi
     LIBS="$CAIRO_LIBS $LIBS"
     CPPFLAGS="$CAIRO_CFLAGS $CPPFLAGS"
   fi
+fi
+if test $BUILD_SERVER = nextbsd -a x"$BUILD_GRAPHICS" != "xcairo"; then
+  as_fn_error $? "nextbsd backend requires cairo" "$LINENO" 5
 fi
 
 if test x"$BUILD_GRAPHICS" = "xxdps"; then
