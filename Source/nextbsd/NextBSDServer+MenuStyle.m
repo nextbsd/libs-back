@@ -70,6 +70,18 @@
  * Dock's strip rule would otherwise move a main-menu-level window, and
  * stacks the menus that drop down from it above the Dock, as pop-up
  * menus, so they open over a top Dock instead of under it.
+ *
+ * In the in-window style the menu lives in the app's windows that can
+ * become main, so an active app with none on screen (Workspace with no
+ * File Viewer, InnerSpace, whose desktop window is never main, an app
+ * whose last window closed) would have no menu at all. The backend then
+ * shows the main menu on its own, as an in-window menu bar in a small
+ * borderless panel at the top left of the usable area (below or beside
+ * the Dock), sized to the menu. It shows only while the app is active
+ * and has no visible window that can be main, and goes as soon as one
+ * comes up, the app is no longer active, or the style changes. The panel
+ * can't become main itself, so libs-gui never puts the menu anywhere
+ * else because of it.
  */
 
 #include "config.h"
@@ -78,6 +90,8 @@
 #include <AppKit/NSInterfaceStyle.h>
 #include <AppKit/NSMenu.h>
 #include <AppKit/NSMenuView.h>
+#include <AppKit/NSPanel.h>
+#include <AppKit/NSScreen.h>
 #include <AppKit/NSWindow.h>
 #include <Foundation/NSArray.h>
 #include <Foundation/NSDebug.h>
@@ -246,6 +260,40 @@ collectTornOff(NSMenu *menu, NSMutableArray *found)
 	 selector: @selector(_menuStyleThemeDidActivate:)
 	     name: GSThemeDidActivateNotification
 	   object: nil];
+
+  /* What can change whether the standalone menu shows. */
+  [nc addObserver: self
+	 selector: @selector(_menuHolderNeedsCheck:)
+	     name: NSApplicationDidUpdateNotification
+	   object: nil];
+  [nc addObserver: self
+	 selector: @selector(_menuHolderNeedsCheck:)
+	     name: NSApplicationDidResignActiveNotification
+	   object: nil];
+  [nc addObserver: self
+	 selector: @selector(_menuHolderNeedsCheck:)
+	     name: NSApplicationDidHideNotification
+	   object: nil];
+  [nc addObserver: self
+	 selector: @selector(_menuHolderNeedsCheck:)
+	     name: NSApplicationDidChangeScreenParametersNotification
+	   object: nil];
+  [nc addObserver: self
+	 selector: @selector(_menuHolderNeedsCheck:)
+	     name: NSWindowDidBecomeMainNotification
+	   object: nil];
+  [nc addObserver: self
+	 selector: @selector(_menuHolderNeedsCheck:)
+	     name: NSWindowWillCloseNotification
+	   object: nil];
+  [nc addObserver: self
+	 selector: @selector(_menuHolderNeedsCheck:)
+	     name: NSWindowDidMiniaturizeNotification
+	   object: nil];
+  [nc addObserver: self
+	 selector: @selector(_menuHolderNeedsCheck:)
+	     name: NSWindowDidDeminiaturizeNotification
+	   object: nil];
 }
 
 - (void) _tearDownMenuStyle
@@ -260,6 +308,7 @@ collectTornOff(NSMenu *menu, NSMutableArray *found)
     }
   DESTROY(tornOffMenus);
   DESTROY(nextMenuOrder);
+  DESTROY(menuHolder);
 }
 
 - (void) _menuStyleAppWillFinishLaunching: (NSNotification *)n
@@ -296,6 +345,8 @@ collectTornOff(NSMenu *menu, NSMutableArray *found)
 {
   NSEnumerator *e;
   NSMenu       *m;
+
+  [self _menuHolderNeedsCheck: n];
 
   /* Torn-off menus waiting for the app to come back to the front. */
   if (tornOffMenus == nil
@@ -396,6 +447,8 @@ collectTornOff(NSMenu *menu, NSMutableArray *found)
 
   if (old == NSMacintoshInterfaceStyle)
     [self _dropOwnMenuBarStrip];
+  if (old == NSWindows95InterfaceStyle)
+    [self _hideMenuHolder];
 
   /* Back to the NeXT style in an app that isn't active: libs-gui puts
      the menu where the user left it (NSMenuLocations), but its window
@@ -413,6 +466,7 @@ collectTornOff(NSMenu *menu, NSMutableArray *found)
     }
 
   [main setMain: YES];
+  [self _menuHolderNeedsCheck: nil];
 
   if ([rootLocation isKindOfClass: [NSString class]])
     [self performSelector: @selector(_keepMainMenuLocation:)
@@ -492,6 +546,153 @@ collectTornOff(NSMenu *menu, NSMutableArray *found)
       if ([NSApp isActive])
 	[main display];
     }
+}
+
+/*
+ * The standalone in-window menu (see the top of this file). Checked once
+ * the events and notifications in hand are handled, so a window that is
+ * closing has gone and a new one is on screen.
+ */
+- (void) _menuHolderNeedsCheck: (NSNotification *)n
+{
+  if (menuHolderCheckPending)
+    return;
+  menuHolderCheckPending = YES;
+  [self performSelector: @selector(_updateMenuHolder)
+	     withObject: nil
+	     afterDelay: 0.0];
+}
+
+/* An active, shown app in the in-window style with a main menu and no
+   visible window that can be main (and so would carry the menu). */
+- (BOOL) _wantsMenuHolder
+{
+  NSMenu       *main = [NSApp mainMenu];
+  NSEnumerator *e;
+  NSWindow     *w;
+
+  if (main == nil || ![NSApp isActive] || [NSApp isHidden]
+      || currentMenuInterfaceStyle() != NSWindows95InterfaceStyle)
+    return NO;
+  e = [[NSApp windows] objectEnumerator];
+  while ((w = [e nextObject]) != nil)
+    {
+      if (w != menuHolder && [w isVisible] && ![w isMiniaturized]
+	  && [w canBecomeMainWindow])
+	return NO;
+    }
+  return YES;
+}
+
+/* The right edge of the holder's menu bar's last item. */
+static CGFloat
+menuBarItemsWidth(NSWindow *window)
+{
+  /* The window's decoration view holds the bar beside the content. */
+  NSEnumerator *e = [[[[window contentView] superview] subviews]
+		      objectEnumerator];
+  NSView       *v;
+
+  while ((v = [e nextObject]) != nil)
+    {
+      if ([v isKindOfClass: [NSMenuView class]])
+	{
+	  NSMenuView *mv = (NSMenuView *)v;
+	  NSInteger   n = [[[mv menu] itemArray] count];
+
+	  [mv setAutoresizingMask: NSViewWidthSizable];
+	  if (n == 0)
+	    return 0.0;
+	  [mv update];
+	  return NSMaxX([mv rectOfItemAtIndex: n - 1]);
+	}
+    }
+  return 0.0;
+}
+
+- (void) _updateMenuHolder
+{
+  NSMenu  *main = [NSApp mainMenu];
+  NSRect   area, frame;
+  CGFloat  width;
+
+  menuHolderCheckPending = NO;
+  if (![self _wantsMenuHolder])
+    {
+      [self _hideMenuHolder];
+      return;
+    }
+  area = [[NSScreen mainScreen] visibleFrame];
+  if (menuHolder == nil)
+    {
+      menuHolder = [[NSPanel alloc]
+		     initWithContentRect: NSMakeRect(NSMinX(area), NSMaxY(area),
+						     NSWidth(area), 0.0)
+			       styleMask: NSBorderlessWindowMask
+				 backing: NSBackingStoreBuffered
+				   defer: NO];
+      [menuHolder setReleasedWhenClosed: NO];
+      /* The backend hides it when the app resigns; libs-gui would show
+	 a panel that hid on deactivation again on the next activation,
+	 main window or not. */
+      [menuHolder setHidesOnDeactivate: NO];
+      [menuHolder setLevel: NSFloatingWindowLevel];
+      [menuHolder setTitle: [[NSProcessInfo processInfo] processName]];
+    }
+  if ([menuHolder menu] != main)
+    {
+      /* Full width while the bar lays out, then just the menu's. */
+      [menuHolder setFrame: NSMakeRect(NSMinX(area), NSMinY(area),
+				       NSWidth(area), 1.0)
+		   display: NO];
+      [[GSTheme theme] setMenu: nil forWindow: menuHolder];
+      [[GSTheme theme] setMenu: main forWindow: menuHolder];
+    }
+  frame = [menuHolder frame];
+  width = ceil(menuBarItemsWidth(menuHolder)) + 8.0;
+  if (width > 8.0)
+    frame.size.width = MIN(width, NSWidth(area));
+  frame.origin.x = NSMinX(area);
+  frame.origin.y = NSMaxY(area) - NSHeight(frame);
+  if (!NSEqualRects(frame, [menuHolder frame]))
+    [menuHolder setFrame: frame display: YES];
+  if (![menuHolder isVisible])
+    [menuHolder orderFrontRegardless];
+}
+
+/* Close the open submenus under `menu` (not torn-off ones). */
+static void
+closeOpenSubmenus(NSMenu *menu)
+{
+  NSEnumerator *e = [[menu itemArray] objectEnumerator];
+  NSMenuItem   *item;
+
+  while ((item = [e nextObject]) != nil)
+    {
+      NSMenu *sub = [item submenu];
+
+      if (sub == nil || [sub isTornOff])
+	continue;
+      closeOpenSubmenus(sub);
+      if ([[sub window] isVisible])
+	[sub close];
+    }
+}
+
+- (void) _hideMenuHolder
+{
+  if (menuHolder == nil)
+    return;
+  if ([menuHolder isVisible])
+    {
+      /* A submenu dropped from the bar (its item just opened a window,
+	 say) would stay on screen without it. */
+      closeOpenSubmenus([NSApp mainMenu]);
+      [menuHolder orderOut: nil];
+    }
+  if (currentMenuInterfaceStyle() != NSWindows95InterfaceStyle
+      && [menuHolder menu] != nil)
+    [[GSTheme theme] setMenu: nil forWindow: menuHolder];
 }
 
 - (void) _reportMenuBar
