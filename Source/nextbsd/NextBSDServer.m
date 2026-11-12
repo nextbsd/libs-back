@@ -30,7 +30,11 @@
 #include "config.h"
 #include <AppKit/AppKitExceptions.h>
 #include <AppKit/NSApplication.h>
+#include <AppKit/NSBitmapImageRep.h>
 #include <AppKit/NSGraphics.h>
+#include <AppKit/NSGraphicsContext.h>
+#include <AppKit/NSImage.h>
+#include <AppKit/NSView.h>
 #include <AppKit/DPSOperators.h>
 #include <AppKit/NSEvent.h>
 #include <AppKit/NSWindow.h>
@@ -43,6 +47,7 @@
 #include <Foundation/NSNotification.h>
 #include <Foundation/NSProcessInfo.h>
 #include <Foundation/NSRunLoop.h>
+#include <Foundation/NSTimer.h>
 #include <Foundation/NSUserDefaults.h>
 #include <Foundation/NSValue.h>
 
@@ -141,6 +146,9 @@ watchedModes(void)
     }
   sharedConnection = conn;
   screen = *ws_main_screen(conn);
+  /* WindowServer draws the minimized windows; older servers leave
+     that to libs-gui's miniwindows. */
+  serverMinimizes = (ws_server_flags(conn) & WS_SERVER_MINIMIZE) != 0;
   windows = NSCreateMapTable(NSIntegerMapKeyCallBacks,
 			     NSNonOwnedPointerMapValueCallBacks, 32);
   stack = [[NSMutableArray alloc] init];
@@ -178,6 +186,13 @@ watchedModes(void)
 	 selector: @selector(_appDidResignActive:)
 	     name: NSApplicationDidResignActiveNotification
 	   object: nil];
+  if (serverMinimizes)
+    {
+      [nc addObserver: self
+	     selector: @selector(_appDidFinishLaunching:)
+		 name: NSApplicationDidFinishLaunchingNotification
+	       object: nil];
+    }
 
   [self setupCursors];
   /* ws_connect may have queued events while waiting for its welcome. */
@@ -215,6 +230,9 @@ watchedModes(void)
   nextbsd_window_t *w;
 
   [[NSNotificationCenter defaultCenter] removeObserver: self];
+  [previewTimer invalidate];
+  previewTimer = nil;
+  DESTROY(uploadedIcon);
   DESTROY(stack);
   if (windows != nil)
     {
@@ -294,6 +312,12 @@ watchedModes(void)
     {
       ws_deactivate(conn);
     }
+}
+
+- (void) _appDidFinishLaunching: (NSNotification *)n
+{
+  /* The icon WindowServer badges the tiles of minimized windows with. */
+  [self uploadAppIconIfChanged];
 }
 
 /* ---- helpers ---- */
@@ -561,13 +585,32 @@ watchedModes(void)
 {
   nextbsd_window_t *w = [self windowWithNumber: win];
 
-  /* The app draws its own miniwindow; hide the real one. */
   if (w == NULL)
+    return;
+  /* With GSSuppressAppIcon, hiding the app miniaturizes all its
+     windows, the app icon window too. That one is never on screen
+     then (NSIconWindow doesn't order itself in or out), so it gets no
+     tile, which nothing could take away again; the tiles of the other
+     windows stand for the hidden app. */
+  if (serverMinimizes && NSApp != nil
+      && GSWindowWithNumber(win) == [NSApp iconWindow])
     return;
   w->miniaturized = YES;
   w->visible = NO;
   [self _stackRemove: w->number];
-  ws_window_order(conn, w->number, WS_ORDER_OUT, 0);
+  if (serverMinimizes)
+    {
+      /* WindowServer orders the window out and shows a live tile of it,
+	 badged with the app icon, until the app orders it in again. */
+      [self uploadAppIconIfChanged];
+      ws_window_minimize(conn, w->number);
+      [self _startPreviewTimer];
+    }
+  else
+    {
+      /* The app draws its own miniwindow; hide the real one. */
+      ws_window_order(conn, w->number, WS_ORDER_OUT, 0);
+    }
 }
 
 - (BOOL) hideApplication: (int)win
@@ -579,7 +622,9 @@ watchedModes(void)
 
 - (BOOL) appOwnsMiniwindow
 {
-  return YES;
+  /* With NO, libs-gui makes no miniwindow and leaves minimizing to
+     -miniwindow:. */
+  return serverMinimizes ? NO : YES;
 }
 
 - (void) setWindowdevice: (int)win forContext: (NSGraphicsContext *)ctxt
@@ -836,6 +881,170 @@ watchedModes(void)
     return;
   w->ignoresMouse = ignoreMouse;
   [self updateFlags: w];
+}
+
+@end
+
+/* ----------------------------------------------------------------------- */
+
+@implementation NextBSDServer (Minimize)
+
+/* The app icon as premultiplied ARGB8888, size x size, drawn with cairo
+   into a bitmap (CairoBitmapSurface). */
+- (void) _uploadAppIcon: (NSImage *)icon
+{
+  const int	     size = 64;
+  NSBitmapImageRep  *rep;
+  NSGraphicsContext *ctx;
+  NSGraphicsContext *old;
+  unsigned char	    *p;
+  uint32_t	    *argb;
+  int		     i;
+
+  rep = [[NSBitmapImageRep alloc] initWithBitmapDataPlanes: NULL
+						 pixelsWide: size
+						 pixelsHigh: size
+					      bitsPerSample: 8
+					    samplesPerPixel: 4
+						   hasAlpha: YES
+						   isPlanar: NO
+					     colorSpaceName: NSDeviceRGBColorSpace
+						bytesPerRow: size * 4
+					       bitsPerPixel: 32];
+  if (rep == nil)
+    return;
+  memset([rep bitmapData], 0, size * size * 4);
+  ctx = [NSGraphicsContext graphicsContextWithBitmapImageRep: rep];
+  if (ctx == nil)
+    {
+      RELEASE(rep);
+      return;
+    }
+  old = [NSGraphicsContext currentContext];
+  [NSGraphicsContext setCurrentContext: ctx];
+  NS_DURING
+    {
+      [icon drawInRect: NSMakeRect(0, 0, size, size)
+	      fromRect: NSZeroRect
+	     operation: NSCompositeSourceOver
+	      fraction: 1.0];
+      [ctx flushGraphics];
+    }
+  NS_HANDLER
+    {
+      NSLog(@"NextBSD: can't draw the app icon for WindowServer: %@",
+	    localException);
+    }
+  NS_ENDHANDLER
+  [NSGraphicsContext setCurrentContext: old];
+
+  /* The bitmap is RGBA, premultiplied (bitmapFormat 0). */
+  p = [rep bitmapData];
+  argb = malloc(size * size * 4);
+  if (argb != NULL)
+    {
+      for (i = 0; i < size * size; i++, p += 4)
+	{
+	  argb[i] = ((uint32_t)p[3] << 24) | ((uint32_t)p[0] << 16)
+	    | ((uint32_t)p[1] << 8) | (uint32_t)p[2];
+	}
+      if (ws_set_app_icon(conn, size, size, argb, size * 4) < 0)
+	NSDebugLLog(@"NextBSD", @"ws_set_app_icon: %s", strerror(errno));
+      free(argb);
+    }
+  RELEASE(rep);
+}
+
+- (void) uploadAppIconIfChanged
+{
+  NSImage *icon;
+
+  if (!serverMinimizes || conn == NULL || NSApp == nil)
+    return;
+  /* -setApplicationIconImage: always installs a new image object. */
+  icon = [NSApp applicationIconImage];
+  if (icon == nil || icon == uploadedIcon)
+    return;
+  ASSIGN(uploadedIcon, icon);
+  [self _uploadAppIcon: icon];
+}
+
+- (void) _startPreviewTimer
+{
+  NSRunLoop    *loop = [NSRunLoop currentRunLoop];
+  NSEnumerator *e;
+  NSString     *mode;
+
+  if (previewTimer != nil)
+    return;
+  previewTimer = [NSTimer timerWithTimeInterval: 0.25
+					 target: self
+				       selector: @selector(_drawMinimized:)
+				       userInfo: nil
+					repeats: YES];
+  e = [watchedModes() objectEnumerator];
+  while ((mode = [e nextObject]) != nil)
+    [loop addTimer: previewTimer forMode: mode];
+}
+
+/*
+ * Keep the tiles live. libs-gui stops displaying a window once it is
+ * miniaturized (-[NSWindow displayIfNeeded] returns early), so a few
+ * times a second the backend displays the views of minimized windows
+ * that need it and flushes them; WindowServer redraws the tile from
+ * every commit. The timer stops when no window is minimized, and also
+ * picks up a changed app icon while tiles show it.
+ */
+- (void) _drawMinimized: (NSTimer *)timer
+{
+  NSMutableArray   *numbers = [NSMutableArray array];
+  NSMapEnumerator   en;
+  void		   *key;
+  nextbsd_window_t *w;
+  NSEnumerator	   *e;
+  NSNumber	   *n;
+
+  /* Drawing can create windows (image caches), so don't draw while
+     enumerating the map. */
+  en = NSEnumerateMapTable(windows);
+  while (NSNextMapEnumeratorPair(&en, &key, (void **)&w))
+    {
+      if (w->miniaturized && !w->visible)
+	[numbers addObject: [NSNumber numberWithInt: w->number]];
+    }
+  NSEndMapTableEnumeration(&en);
+  if ([numbers count] == 0)
+    {
+      [previewTimer invalidate];
+      previewTimer = nil;
+      return;
+    }
+  [self uploadAppIconIfChanged];
+  e = [numbers objectEnumerator];
+  while ((n = [e nextObject]) != nil)
+    {
+      NSWindow *nswin = GSWindowWithNumber([n intValue]);
+      NSView   *top;
+
+      if (nswin == nil || ![nswin isMiniaturized]
+	  || ![nswin viewsNeedDisplay])
+	continue;
+      /* The frame view: the content view and the title bar. */
+      top = [[nswin contentView] superview];
+      if (top == nil)
+	top = [nswin contentView];
+      NS_DURING
+	{
+	  [top displayIfNeeded];
+	  [nswin flushWindow];
+	}
+      NS_HANDLER
+	{
+	  NSLog(@"NextBSD: exception drawing minimized window %d: %@",
+		[n intValue], localException);
+	}
+      NS_ENDHANDLER
+    }
 }
 
 @end

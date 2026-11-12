@@ -470,6 +470,27 @@ utf8_string(const char *text, size_t size)
 	}
       break;
 
+    case WS_EVENT_WINDOW_RESTORE:
+      /* The user double-clicked the window's tile; WindowServer has
+	 activated us. Deminiaturize the libs-gui way, so delegates and
+	 notifications see it; ordering the window in removes the tile. */
+      {
+	NSWindow *nswin = GSWindowWithNumber(ev->hdr.window);
+
+	w = [self windowWithNumber: ev->hdr.window];
+	if (nswin == nil || w == NULL)
+	  break;
+	/* With GSSuppressAppIcon, hiding miniaturizes every window, and a
+	   hidden app orders no window in: unhiding brings them all back. */
+	if ([NSApp isHidden])
+	  [NSApp unhide: NSApp];
+	if ([nswin isMiniaturized])
+	  [nswin deminiaturize: NSApp];
+	else if (!w->visible)
+	  [nswin makeKeyAndOrderFront: NSApp];
+      }
+      break;
+
     case WS_EVENT_BUFFER_RELEASE:
       w = [self windowWithNumber: ev->hdr.window];
       if (w != NULL && w->surface != nil)

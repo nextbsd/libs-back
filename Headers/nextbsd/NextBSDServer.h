@@ -39,6 +39,14 @@
  * Window numbers are WindowServer window ids, which are unique across
  * all apps.  WindowServer coordinates have a top-left origin; the
  * backend converts them to and from the bottom-left origin of GNUstep.
+ *
+ * Minimized windows: when WindowServer can minimize windows itself
+ * (WS_SERVER_MINIMIZE), -appOwnsMiniwindow is NO, so libs-gui draws no
+ * miniwindow. WindowServer shows a live, scaled-down tile of the window
+ * with the app's icon, which the backend uploads, and asks for the
+ * window back with WS_EVENT_WINDOW_RESTORE when the tile is
+ * double-clicked; the backend then calls -[NSWindow deminiaturize:].
+ * With an older WindowServer the app draws its miniwindows as before.
  */
 
 #ifndef _NextBSDServer_h_INCLUDE
@@ -50,6 +58,8 @@
 #include <WindowServer/WSClient.h>
 
 @class NextBSDCairoShmSurface;
+@class NSImage;
+@class NSTimer;
 
 /* One GNUstep window, as the backend sees it. */
 typedef struct nextbsd_window
@@ -91,6 +101,10 @@ typedef struct nextbsd_cursor
   BOOL			 cursorHidden;
   float			 scrollMultiplier;
   float			 scrollPixelsPerLine;
+  /* minimizing (WS_SERVER_MINIMIZE) */
+  BOOL			 serverMinimizes;
+  NSImage		*uploadedIcon;	/* app icon WindowServer has */
+  NSTimer		*previewTimer;	/* not retained; the run loop has it */
 }
 
 /* The connection, for the cairo surfaces. */
@@ -148,6 +162,13 @@ typedef struct nextbsd_cursor
 
 @interface NextBSDServer (Events)
 - (void) handleEvent: (const ws_event_t *)event;
+@end
+
+@interface NextBSDServer (Minimize)
+/* Give WindowServer the app icon if it changed since the last time. */
+- (void) uploadAppIconIfChanged;
+/* Keep drawing minimized windows, so their tiles stay live. */
+- (void) _startPreviewTimer;
 @end
 
 @interface NextBSDServer (Cursor)
