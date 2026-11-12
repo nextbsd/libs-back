@@ -97,6 +97,32 @@ typedef struct nextbsd_cursor
 + (ws_connection_t *) connection;
 - (ws_connection_t *) connection;
 
+/*
+ * This app's WindowServer credentials, for a helper process that should
+ * be part of the same app, such as the X server XLibre.app starts.
+ * Returns a dictionary with
+ *
+ *   @"ClientID"	NSNumber (unsigned int), ws_client_id()
+ *   @"Token"		NSNumber (unsigned long long), ws_client_token()
+ *
+ * The helper passes both to ws_connect_join() (libWindowServerClient),
+ * and WindowServer then activates it together with this app and lets
+ * the two share the key window, so clicking the helper's windows keeps
+ * this app active and its menu on screen. Anyone holding the token can
+ * join, so give it to the helper through a pipe or its environment,
+ * never on a command line other users can read with ps.
+ *
+ * This header isn't installed, so an app calls it by selector:
+ *
+ *   id server = GSCurrentServer();
+ *   SEL sel = @selector(windowServerAppCredentials);
+ *   NSDictionary *creds = [server respondsToSelector: sel]
+ *     ? [server performSelector: sel] : nil;
+ *
+ * nil means the app isn't running on the NextBSD backend.
+ */
+- (NSDictionary *) windowServerAppCredentials;
+
 - (nextbsd_window_t *) windowWithNumber: (int)win;
 - (CGFloat) screenHeight;
 
