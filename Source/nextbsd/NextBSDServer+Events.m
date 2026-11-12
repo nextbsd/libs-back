@@ -39,6 +39,7 @@
 
 #include "nextbsd/NextBSDServer.h"
 #include "nextbsd/NextBSDCairoShmSurface.h"
+#include "nextbsd/NextBSDDragView.h"
 
 /* The window WindowServer last made key because we asked it to. */
 static int requestedKeyWindow = 0;
@@ -679,6 +680,14 @@ utf8_string(const char *text, size_t size)
 
     case WS_EVENT_POINTER_UNGRABBED:
       [self _popupGrabEnded];
+      break;
+#endif
+
+#ifdef WS_SERVER_DRAG
+    case WS_EVENT_DRAG:
+    case WS_EVENT_DRAG_STATUS:
+    case WS_EVENT_DRAG_END:
+      [[NextBSDDragView sharedDragView] takeDragEvent: ev];
       break;
 #endif
 
