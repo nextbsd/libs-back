@@ -720,12 +720,23 @@ watchedModes(void)
 {
   NSWindow *nswin = GSWindowWithNumber(w->number);
   NSRect    old;
+  NSSize    drawn;
   NSEvent  *ev = nil;
 
   if (nswin == nil)
     return;
   old = [nswin frame];
-  if (!NSEqualSizes(old.size, w->frame.size))
+  /* The size the window draws at: its surface's, made from w->frame when
+     libs-gui last handled a resize. A resize this sent earlier may have
+     been handled after the app placed the window again at another size
+     (a tile that came while it was being ordered in), leaving the
+     NSWindow at the new size but its surface at the old one: resize
+     again then, or the window never draws at its new size. */
+  drawn = w->surface != nil ? [w->surface size]
+    : NSMakeSize((int)NSWidth(w->frame), (int)NSHeight(w->frame));
+  if (!NSEqualSizes(old.size, w->frame.size)
+      || (int)drawn.width != MAX((int)NSWidth(w->frame), 1)
+      || (int)drawn.height != MAX((int)NSHeight(w->frame), 1))
     {
       /* A resize event also moves the origin. */
       ev = [NSEvent otherEventWithType: NSAppKitDefined
