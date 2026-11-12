@@ -422,6 +422,8 @@ watchedModes(void)
      changes it live (NextBSDServer+MenuStyle.m). */
   reportedMenuBar = -1;
   [self _setUpMenuStyle];
+  /* Tiles aren't saved as the windows' frames. */
+  [self _setUpTiledFrames];
 
   [self setupCursors];
   /* ws_connect may have queued events while waiting for its welcome. */
@@ -463,6 +465,7 @@ watchedModes(void)
   [previewTimer invalidate];
   previewTimer = nil;
   DESTROY(uploadedIcon);
+  DESTROY(tiledFrames);
   DESTROY(stack);
   if (windows != nil)
     {
@@ -937,6 +940,7 @@ watchedModes(void)
   w->surface = nil;
   ws_window_destroy(conn, w->number);
   NSMapRemove(windows, (void *)(intptr_t)win);
+  [self _windowClosed: win];
   [self _stackRemove: win];
   if (pointerWindow == win)
     pointerWindow = 0;
@@ -1419,6 +1423,7 @@ watchedModes(void)
   rect = [self _menuFrameOnScreen: rect window: w];
   if (!NSEqualRects(rect, w->frame))
     {
+      [self _windowPlacedByApp: win];
       w->frame = rect;
       r = [self wsRectFromNSRect: rect];
       ws_window_set_frame(conn, w->number, &r);
