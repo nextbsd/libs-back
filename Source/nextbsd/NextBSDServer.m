@@ -34,6 +34,7 @@
 #include <AppKit/NSGraphics.h>
 #include <AppKit/NSGraphicsContext.h>
 #include <AppKit/NSImage.h>
+#include <AppKit/NSInterfaceStyle.h>
 #include <AppKit/NSView.h>
 #include <AppKit/DPSOperators.h>
 #include <AppKit/NSEvent.h>
@@ -253,6 +254,10 @@ watchedModes(void)
   /* WindowServer draws the minimized windows; older servers leave
      that to libs-gui's miniwindows. */
   serverMinimizes = (ws_server_flags(conn) & WS_SERVER_MINIMIZE) != 0;
+#ifdef WS_SERVER_POINTER_GRAB
+  /* A click outside the app closes its open menu (-_updatePopupGrab). */
+  pointerGrabs = (ws_server_flags(conn) & WS_SERVER_POINTER_GRAB) != 0;
+#endif
   windows = NSCreateMapTable(NSIntegerMapKeyCallBacks,
 			     NSNonOwnedPointerMapValueCallBacks, 32);
   stack = [[NSMutableArray alloc] init];
@@ -797,6 +802,7 @@ watchedModes(void)
   if (pointerWindow == win)
     pointerWindow = 0;
   free(w);
+  [self _updatePopupGrab];
 }
 
 - (int) nativeWindow: (void *)winref
@@ -937,6 +943,7 @@ watchedModes(void)
       w->visible = NO;
       [self _stackRemove: w->number];
       ws_window_order(conn, w->number, WS_ORDER_OUT, 0);
+      [self _updatePopupGrab];
       return;
     }
   [self updateFlags: w];
@@ -959,6 +966,7 @@ watchedModes(void)
   if (w->level == NSMainMenuWindowLevel)
     [self _reportMenuBar];
   [self _focusModalWindow: w];
+  [self _updatePopupGrab];
 }
 
 /*
@@ -1149,6 +1157,95 @@ watchedModes(void)
   NSEndMapTableEnumeration(&e);
 }
 
+/*
+ * The popup grab (WS_SERVER_POINTER_GRAB). A menu that stays open after
+ * the click that opened it (a pop-up button's menu, a context menu, a
+ * menu of the Mac menu bar or of a window's menu bar) waits in libs-gui's
+ * tracking loop for the next click. A click on another app's window or
+ * on the desktop never reaches the app, so the menu would stay open. A
+ * WS_GRAB_OUTSIDE grab, held while such a menu is on screen, makes
+ * WindowServer report that click (WS_EVENT_POINTER_OUTSIDE), and the
+ * backend gives the tracking loop a click there, outside every menu:
+ * the menu closes and nothing is chosen.
+ *
+ * The NeXT style's menus stay out of it: the main menu, its attached
+ * submenus and torn-off menus stay on screen by design. Its pop-ups and
+ * transient (right-click) menus are at NSPopUpMenuWindowLevel and count.
+ */
+- (BOOL) _isPopupMenu: (nextbsd_window_t *)w
+{
+  static Class menuPanelClass = Nil;
+
+  if (!w->visible || !(w->level == NSPopUpMenuWindowLevel
+		       || w->level == NSSubmenuWindowLevel))
+    return NO;
+  if (menuPanelClass == Nil)
+    menuPanelClass = NSClassFromString(@"NSMenuPanel");
+  /* Tool tips are at NSPopUpMenuWindowLevel too, and
+     NSSubmenuWindowLevel is NSFloatingWindowLevel: only menus. */
+  if (menuPanelClass == Nil
+      || ![GSWindowWithNumber(w->number) isKindOfClass: menuPanelClass])
+    return NO;
+  return w->level == NSPopUpMenuWindowLevel
+    || NSInterfaceStyleForKey(@"NSMenuInterfaceStyle", nil)
+       != NSNextStepInterfaceStyle;
+}
+
+/* The app's topmost open menu or pop-up, or NULL. */
+- (nextbsd_window_t *) _topPopupMenu
+{
+  NSUInteger i = [stack count];
+
+  while (i-- > 0)
+    {
+      nextbsd_window_t *w = [self windowWithNumber:
+				    [[stack objectAtIndex: i] intValue]];
+
+      if (w != NULL && [self _isPopupMenu: w])
+	return w;
+    }
+  return NULL;
+}
+
+- (void) _updatePopupGrab
+{
+#ifdef WS_SERVER_POINTER_GRAB
+  BOOL want;
+
+  if (!pointerGrabs || conn == NULL)
+    return;
+  want = [self _topPopupMenu] != NULL;
+  if (want == popupGrabbed)
+    return;
+  if (want)
+    {
+      /* Only the active app may grab (EPERM otherwise); an inactive
+	 app's menus close when it's deactivated anyway. */
+      if (NSApp == nil || ![NSApp isActive])
+	return;
+      popupGrabbed = ws_pointer_grab(conn, WS_GRAB_OUTSIDE) == 0;
+      NSDebugLLog(@"NextBSD", @"popup grab %s",
+		  popupGrabbed ? "taken" : strerror(errno));
+      /* ws_pointer_grab waits for its answer, and may have read events
+	 into the queue meanwhile. */
+      [self scheduleDispatch];
+    }
+  else
+    {
+      popupGrabbed = NO;
+      ws_pointer_ungrab(conn);
+      NSDebugLLog(@"NextBSD", @"popup grab released");
+    }
+#endif
+}
+
+- (void) _popupGrabEnded
+{
+  if (popupGrabbed)
+    NSDebugLLog(@"NextBSD", @"popup grab ended by WindowServer");
+  popupGrabbed = NO;
+}
+
 - (void) movewindow: (NSPoint)loc : (int)win
 {
   nextbsd_window_t *w = [self windowWithNumber: win];
@@ -1214,6 +1311,8 @@ watchedModes(void)
 	}
     }
   [self updateFlags: w];
+  if (w->visible)
+    [self _updatePopupGrab];
 }
 
 - (int) windowlevel: (int)win
