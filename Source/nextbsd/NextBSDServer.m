@@ -486,9 +486,19 @@ watchedModes(void)
   return conn;
 }
 
+/* The native window: WindowServer's window id, which is also the
+   window's number here. As the X11 backend answers with the X window,
+   -[NSWindow windowRef] and NSConvertWindowNumberToGlobal() then name
+   the window the way other processes see it: the Dock looks up the
+   window GSIconManager's -setWindow:appProcessId: names in
+   WindowServer's window list, and GSDragView compares it with what
+   -findWindowAt:windowRef:excluding: answers. 0 if there's no such
+   window. */
 - (void *) windowDevice: (int)win
 {
-  return [self windowWithNumber: win];
+  nextbsd_window_t *w = [self windowWithNumber: win];
+
+  return w != NULL ? (void *)(intptr_t)w->number : NULL;
 }
 
 - (void) beep
