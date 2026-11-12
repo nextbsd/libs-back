@@ -178,6 +178,9 @@ typedef struct nextbsd_cursor
   NSArray		*nextMenuOrder;	/* the main menu's items in NeXT style */
   NSPanel		*menuHolder;	/* in-window style, no main window */
   BOOL			 menuHolderCheckPending;
+  /* tiled windows' saved frames from before tiling, by window number
+     (NextBSDServer+TiledFrames.m) */
+  NSMutableDictionary	*tiledFrames;
 }
 
 /* The connection, for the cairo surfaces. */
@@ -306,6 +309,19 @@ typedef struct nextbsd_cursor
 /* The level WindowServer stacks the window at: libs-gui's, except for
    the Mac menu bar's menus (above the Dock, as pop-up menus). */
 - (int) _serverLevel: (nextbsd_window_t *)w;
+@end
+
+@interface NextBSDServer (TiledFrames)
+/* At startup (-initWithAttributes:). */
+- (void) _setUpTiledFrames;
+/* A WS_EVENT_WINDOW_FRAME, a tile (WS_FRAME_TILED) or not: while a
+   window is tiled, its saved frame (frame autosave) stays the one from
+   before. */
+- (void) _window: (nextbsd_window_t *)w isTiled: (BOOL)tiled;
+/* The app placed the window itself (-placewindow::): a window no longer
+   tiled saves its frames again. */
+- (void) _windowPlacedByApp: (int)win;
+- (void) _windowClosed: (int)win;
 @end
 
 /* A NextBSD desktop setting (NextBSDServer.m): the user's value, else

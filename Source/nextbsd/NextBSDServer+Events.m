@@ -606,6 +606,10 @@ utf8_string(const char *text, size_t size)
       if (w != NULL)
 	{
 	  w->frame = [self nsRectFromWSRect: ev->u.frame.frame];
+#ifdef WS_FRAME_TILED
+	  [self _window: w
+		isTiled: (ev->u.frame.flags & WS_FRAME_TILED) != 0];
+#endif
 	  /* During a screen change the window hears it with the others,
 	     once the change's events are in (-_notifyAllFrames). */
 	  if (!screenParamsPending)
