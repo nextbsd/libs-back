@@ -210,6 +210,22 @@ typedef struct nextbsd_cursor
  */
 - (NSDictionary *) windowServerAppCredentials;
 
+/*
+ * Change WindowServer settings for the user's session (WS_MSG_SET_SETTINGS,
+ * see "Settings" in its README): each key (WindowMode, TilingLayout...)
+ * to its value's -description, or back to the system's for NSNull. It
+ * is how a settings app such as Workspace Preferences switches window
+ * tiling live; the app also keeps the values in the user's
+ * org.nextbsd.WindowServer defaults, which the next login sends. Returns
+ * NO if WindowServer refused one (it changes none then), or has no
+ * settings (older servers). Called by selector, as above:
+ *
+ *   SEL sel = @selector(setWindowServerSettings:);
+ *   if ([server respondsToSelector: sel])
+ *     [server performSelector: sel withObject: settings];
+ */
+- (BOOL) setWindowServerSettings: (NSDictionary *)settings;
+
 - (nextbsd_window_t *) windowWithNumber: (int)win;
 - (CGFloat) screenHeight;
 
@@ -293,9 +309,15 @@ typedef struct nextbsd_cursor
 @end
 
 /* A NextBSD desktop setting (NextBSDServer.m): the user's value, else
-   the active theme's, else `builtin`. As nextbsd-theme's
+   the active theme's, else `builtin`; the Dock position and the menu
+   style in the current window mode. As nextbsd-theme's
    NBDesktopSettings.h. */
 NSString *NextBSDDesktopSetting(NSString *key, NSArray *allowed,
 				NSString *builtin);
+/* The user's own value alone (in `mode`, for a per-mode key), or nil. */
+NSString *NextBSDDesktopUserSetting(NSString *key, NSString *mode,
+				    NSArray *allowed);
+/* The window mode in effect: @"stacking" or @"tiling". */
+NSString *NextBSDWindowMode(void);
 
 #endif /* _NextBSDServer_h_INCLUDE */

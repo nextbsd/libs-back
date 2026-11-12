@@ -68,23 +68,89 @@
 /*
  * A NextBSD desktop setting: the user's choice (the key in the user's
  * defaults, from Workspace Preferences), else the active theme's default
- * (the key at the top of its Info.plist), else the built-in one. This is
- * the lookup in nextbsd-theme's NBDesktopSettings.h; keep them in step.
+ * (the key at the top of its Info.plist), else the built-in one. The
+ * Dock position and the menu style are kept per window mode
+ * (NBWindowMode): the user's NBModeSettings[mode] (in stacking, a plain
+ * user key from before counts too), the theme's NBModeDefaults[mode],
+ * the theme's plain key, the built-in one. This is the lookup in
+ * nextbsd-theme's NBDesktopSettings.h; keep them in step.
  */
+static NSString *
+validSetting(id value, NSArray *allowed)
+{
+  if ([value isKindOfClass: [NSString class]]
+      && [allowed containsObject: value])
+    return value;
+  return nil;
+}
+
+static BOOL
+settingIsPerMode(NSString *key)
+{
+  return [key isEqual: @"NBDockPosition"] || [key isEqual: @"NBMenuStyle"];
+}
+
+/* modes[mode][key], when both are dictionaries. */
+static id
+modeValue(id modes, NSString *mode, NSString *key)
+{
+  id entry;
+
+  if (![modes isKindOfClass: [NSDictionary class]])
+    return nil;
+  entry = [modes objectForKey: mode];
+  if (![entry isKindOfClass: [NSDictionary class]])
+    return nil;
+  return [entry objectForKey: key];
+}
+
+NSString *
+NextBSDDesktopUserSetting(NSString *key, NSString *mode, NSArray *allowed)
+{
+  NSUserDefaults *defs = [NSUserDefaults standardUserDefaults];
+  NSString	 *value;
+
+  if (!settingIsPerMode(key))
+    return validSetting([defs objectForKey: key], allowed);
+  value = validSetting(modeValue([defs objectForKey: @"NBModeSettings"],
+				 mode, key), allowed);
+  if (value == nil && [mode isEqual: @"stacking"])
+    value = validSetting([defs objectForKey: key], allowed);
+  return value;
+}
+
+NSString *
+NextBSDWindowMode(void)
+{
+  static NSArray *modes = nil;
+  NSString	 *value;
+
+  if (modes == nil)
+    modes = [[NSArray alloc] initWithObjects: @"stacking", @"tiling", nil];
+  value = NextBSDDesktopUserSetting(@"NBWindowMode", nil, modes);
+  if (value == nil)
+    value = validSetting([[[GSTheme theme] infoDictionary]
+			   objectForKey: @"NBWindowMode"], modes);
+  return value != nil ? value : @"stacking";
+}
+
 NSString *
 NextBSDDesktopSetting(NSString *key, NSArray *allowed, NSString *builtin)
 {
-  id value;
+  NSString     *mode = settingIsPerMode(key) ? NextBSDWindowMode() : nil;
+  NSDictionary *info;
+  NSString     *value;
 
-  value = [[NSUserDefaults standardUserDefaults] objectForKey: key];
-  if ([value isKindOfClass: [NSString class]]
-      && [allowed containsObject: value])
+  value = NextBSDDesktopUserSetting(key, mode, allowed);
+  if (value != nil)
     return value;
-  value = [[[GSTheme theme] infoDictionary] objectForKey: key];
-  if ([value isKindOfClass: [NSString class]]
-      && [allowed containsObject: value])
-    return value;
-  return builtin;
+  info = [[GSTheme theme] infoDictionary];
+  if (mode != nil)
+    value = validSetting(modeValue([info objectForKey: @"NBModeDefaults"],
+				   mode, key), allowed);
+  if (value == nil)
+    value = validSetting([info objectForKey: key], allowed);
+  return value != nil ? value : builtin;
 }
 
 /* The minimize style: "nextstep" (libs-gui draws miniwindows), "previews"
@@ -221,6 +287,55 @@ watchedModes(void)
     [NSNumber numberWithUnsignedInt: ws_client_id(conn)], @"ClientID",
     [NSNumber numberWithUnsignedLongLong: ws_client_token(conn)], @"Token",
     nil];
+}
+
+- (BOOL) setWindowServerSettings: (NSDictionary *)settings
+{
+#ifdef WS_SERVER_SETTINGS
+  NSEnumerator *e;
+  NSString     *key;
+  ws_setting_t *list;
+  unsigned	n = 0;
+  char		failed[64] = "";
+  int		r;
+
+  if (conn == NULL || [settings count] == 0
+      || (ws_server_flags(conn) & WS_SERVER_SETTINGS) == 0)
+    return NO;
+  list = calloc([settings count], sizeof(*list));
+  if (list == NULL)
+    return NO;
+  e = [settings keyEnumerator];
+  while ((key = [e nextObject]) != nil)
+    {
+      id value = [settings objectForKey: key];
+
+      if (![key isKindOfClass: [NSString class]])
+	continue;
+      list[n].key = [key UTF8String];
+      if (value == nil || value == [NSNull null])
+	{
+	  list[n].type = WS_SETTING_DEFAULT;
+	  list[n].value = "";
+	}
+      else
+	{
+	  /* WindowServer parses a string for any key. */
+	  list[n].type = WS_SETTING_STRING;
+	  list[n].value = [[value description] UTF8String];
+	}
+      n++;
+    }
+  r = n > 0 ? ws_set_settings(conn, 0, list, n, failed, sizeof(failed)) : -1;
+  free(list);
+  if (r < 0 && n > 0)
+    NSLog(@"NextBSD: WindowServer refused the settings%s%s: %s",
+	  failed[0] != '\0' ? " at " : "", failed, strerror(errno));
+  [self scheduleDispatch];
+  return r == 0;
+#else
+  return NO;
+#endif
 }
 
 - (id) initWithAttributes: (NSDictionary *)info

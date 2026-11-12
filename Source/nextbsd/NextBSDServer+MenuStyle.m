@@ -31,7 +31,9 @@
  *		 (NSMacintoshInterfaceStyle)
  *
  * The value is the user's (Workspace Preferences, NSGlobalDomain), else
- * the active theme's Info.plist, else nextstep, as nextbsd-theme's
+ * the active theme's Info.plist, else nextstep, for the window mode in
+ * effect (NBWindowMode: stacking and tiling each have their own, in
+ * NBModeSettings and the theme's NBModeDefaults), as nextbsd-theme's
  * NBDesktopSettings.h documents.
  *
  * libs-gui reads its menu style from the NSMenuInterfaceStyle default
@@ -45,8 +47,8 @@
  * -[NSMenu setMain:] when the style differs from its representation's,
  * which is how GSTheme switches styles when a theme activates. The
  * backend does the same when Workspace Preferences posts
- * org.nextbsd.DesktopSettingsChanged for NBMenuStyle (or for no key),
- * and when the theme changes: it refreshes NSInterfaceStyleForKey()'s
+ * org.nextbsd.DesktopSettingsChanged for NBMenuStyle, NBWindowMode or
+ * NBModeSettings (or for no key), and when the theme changes: it refreshes NSInterfaceStyleForKey()'s
  * cache, then calls -setMain: YES. libs-gui then
  *
  *   - leaving the in-window style, takes the menu out of every window;
@@ -216,16 +218,16 @@ collectTornOff(NSMenu *menu, NSMutableArray *found)
   return YES;
 }
 
-/* The user's NBMenuStyle alone, or nil. */
+/* The user's NBMenuStyle alone, or nil: for the user's window mode,
+   without asking the theme (see -_setUpMenuStyle). */
 - (NSString *) _userMenuStyle
 {
-  id value = [[NSUserDefaults standardUserDefaults]
-	       objectForKey: NBMenuStyleKey];
+  NSArray  *modes = [NSArray arrayWithObjects: @"stacking", @"tiling", nil];
+  NSString *mode = NextBSDDesktopUserSetting(@"NBWindowMode", nil, modes);
 
-  if ([value isKindOfClass: [NSString class]]
-      && [menuStyles() containsObject: value])
-    return value;
-  return nil;
+  return NextBSDDesktopUserSetting(NBMenuStyleKey,
+				   mode != nil ? mode : @"stacking",
+				   menuStyles());
 }
 
 - (void) _setUpMenuStyle
@@ -369,7 +371,9 @@ collectTornOff(NSMenu *menu, NSMutableArray *found)
 {
   id key = [[n userInfo] objectForKey: @"key"];
 
-  if (key != nil && ![key isEqual: NBMenuStyleKey])
+  /* The menu style, or the window mode, which has its own. */
+  if (key != nil && ![key isEqual: NBMenuStyleKey]
+      && ![key isEqual: @"NBWindowMode"] && ![key isEqual: @"NBModeSettings"])
     return;
   /* Read what Workspace Preferences just saved. */
   [[NSUserDefaults standardUserDefaults] synchronize];
