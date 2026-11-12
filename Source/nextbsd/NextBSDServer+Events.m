@@ -607,6 +607,8 @@ utf8_string(const char *text, size_t size)
       if (w != NULL)
 	{
 	  w->frame = [self nsRectFromWSRect: ev->u.frame.frame];
+	  NSDebugLLog(@"NextBSD", @"window %d frame from WindowServer: %@",
+		      w->number, NSStringFromRect(w->frame));
 #ifdef WS_FRAME_TILED
 	  [self _window: w
 		isTiled: (ev->u.frame.flags & WS_FRAME_TILED) != 0];
