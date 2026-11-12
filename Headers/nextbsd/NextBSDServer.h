@@ -104,6 +104,7 @@
 
 @class NextBSDCairoShmSurface;
 @class NSImage;
+@class NSPanel;
 @class NSTimer;
 
 /* One GNUstep window, as the backend sees it. */
@@ -173,6 +174,8 @@ typedef struct nextbsd_cursor
   BOOL			 launched;	/* NSApplicationWillFinishLaunching */
   NSArray		*tornOffMenus;	/* to show again back in NeXT style */
   NSArray		*nextMenuOrder;	/* the main menu's items in NeXT style */
+  NSPanel		*menuHolder;	/* in-window style, no main window */
+  BOOL			 menuHolderCheckPending;
 }
 
 /* The connection, for the cairo surfaces. */
