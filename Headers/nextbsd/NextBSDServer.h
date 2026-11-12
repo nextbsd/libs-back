@@ -119,6 +119,8 @@ typedef struct nextbsd_window
   BOOL		 ignoresMouse;
   BOOL		 miniaturized;
   BOOL		 tiled;		/* minimized to a WindowServer tile */
+  NSSize	 minSize;	/* -setminsize::, -setmaxsize:: (window */
+  NSSize	 maxSize;	/* tiling, WS_SERVER_TILING) */
   NSBackingStoreType type;
   NextBSDCairoShmSurface *surface; /* current surface, not retained */
   struct nextbsd_cursor *cursor; /* the window's cursor WindowServer has

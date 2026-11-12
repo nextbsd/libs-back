@@ -41,6 +41,7 @@
 #include <AppKit/NSWindow.h>
 #include <AppKit/NSMenu.h>
 #include <AppKit/NSMenuView.h>
+#include <AppKit/NSPanel.h>
 #include <AppKit/NSScreen.h>
 #include <Foundation/NSArray.h>
 #include <Foundation/NSConnection.h>
@@ -566,6 +567,21 @@ watchedModes(void)
   if (nswin != nil
       && ([nswin styleMask] & (NSIconWindowMask | NSMiniWindowMask)) != 0)
     flags |= WS_WINDOW_ICON;
+  /* Window tiling: panels (alerts, sheets, inspectors), windows the
+     user can't resize, and every window of an app whose NBNeverTile
+     default is YES float above the tiled windows. */
+  if (nswin != nil && (ws_server_flags(conn) & WS_SERVER_TILING) != 0)
+    {
+      NSUInteger style = [nswin styleMask];
+
+      if ([nswin isKindOfClass: [NSPanel class]]
+	  || (style & (NSUtilityWindowMask | NSDocModalWindowMask)) != 0)
+	flags |= WS_WINDOW_PANEL;
+      if ((style & NSResizableWindowMask) == 0)
+	flags |= WS_WINDOW_FIXED_SIZE;
+      if ([[NSUserDefaults standardUserDefaults] boolForKey: @"NBNeverTile"])
+	flags |= WS_WINDOW_NO_TILE;
+    }
   if (flags != w->flags)
     {
       w->flags = flags;
@@ -824,6 +840,11 @@ watchedModes(void)
 
 - (void) stylewindow: (unsigned int)style : (int)win
 {
+  nextbsd_window_t *w = [self windowWithNumber: win];
+
+  /* A window made resizable or not floats or tiles from now on. */
+  if (w != NULL && w->visible)
+    [self updateFlags: w];
 }
 
 - (void) windowbacking: (NSBackingStoreType)type : (int)win
@@ -1424,12 +1445,43 @@ watchedModes(void)
   return 0;
 }
 
+/* One side of a size limit for WindowServer: 0 for none. */
+static uint32_t
+sizeLimit(CGFloat v)
+{
+  /* libs-gui's default maximum is 10000 x 10000 */
+  return (v <= 1 || v >= 10000) ? 0 : (uint32_t)v;
+}
+
+/* The window's minimum and maximum size: window tiling floats a window
+   whose minimum is larger than its tile (WS_SERVER_TILING). */
+- (void) _sendSizeLimits: (nextbsd_window_t *)w
+{
+  if ((ws_server_flags(conn) & WS_SERVER_TILING) == 0)
+    return;
+  ws_window_set_size_limits(conn, w->number,
+    sizeLimit(w->minSize.width), sizeLimit(w->minSize.height),
+    sizeLimit(w->maxSize.width), sizeLimit(w->maxSize.height));
+}
+
 - (void) setmaxsize: (NSSize)size : (int)win
 {
+  nextbsd_window_t *w = [self windowWithNumber: win];
+
+  if (w == NULL || NSEqualSizes(size, w->maxSize))
+    return;
+  w->maxSize = size;
+  [self _sendSizeLimits: w];
 }
 
 - (void) setminsize: (NSSize)size : (int)win
 {
+  nextbsd_window_t *w = [self windowWithNumber: win];
+
+  if (w == NULL || NSEqualSizes(size, w->minSize))
+    return;
+  w->minSize = size;
+  [self _sendSizeLimits: w];
 }
 
 - (void) setresizeincrements: (NSSize)size : (int)win
