@@ -97,6 +97,19 @@ minimizeStyle(void)
   return desktopSetting(@"NBMinimizeStyle", styles, @"previews");
 }
 
+#ifdef WS_SERVER_MINIMIZE_WHERE
+/* Where WindowServer puts a minimized window: "dock" into the Dock (the
+   bottom row while no Dock is connected), the other styles onto the
+   bottom row. Servers without WS_SERVER_MINIMIZE_WHERE (and builds
+   against their headers) leave it to their MinimizeIntoDock default. */
+static uint32_t
+minimizeWhere(void)
+{
+  return [minimizeStyle() isEqualToString: @"dock"]
+    ? WS_MINIMIZE_INTO_DOCK : WS_MINIMIZE_BOTTOM_ROW;
+}
+#endif
+
 /* The connection, shared with the cairo surfaces. */
 static ws_connection_t *sharedConnection = NULL;
 
@@ -660,7 +673,11 @@ watchedModes(void)
       /* WindowServer orders the window out and shows a live tile of it,
 	 badged with the app icon, until the app orders it in again. */
       [self uploadAppIconIfChanged];
+#ifdef WS_SERVER_MINIMIZE_WHERE
+      ws_window_minimize_where(conn, w->number, minimizeWhere());
+#else
       ws_window_minimize(conn, w->number);
+#endif
       [self _startPreviewTimer];
     }
   else
@@ -699,8 +716,8 @@ watchedModes(void)
   /* With NO, libs-gui makes no miniwindow and leaves minimizing to
      -miniwindow:. The NBMinimizeStyle desktop setting chooses, for each
      window as it's minimized: NeXT miniwindows drawn by libs-gui, or
-     WindowServer's previews. "dock" is previews too; WindowServer hands
-     them to the Dock when its MinimizeIntoDock default is on. */
+     WindowServer's previews, on the bottom row ("previews") or in the
+     Dock ("dock"; -miniwindow: tells WindowServer which). */
   if (!serverMinimizes)
     return YES;
   return [minimizeStyle() isEqualToString: @"nextstep"];

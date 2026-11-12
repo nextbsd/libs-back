@@ -46,7 +46,10 @@
  * with the app's icon, which the backend uploads, and asks for the
  * window back with WS_EVENT_WINDOW_RESTORE when the tile is
  * double-clicked; the backend then calls -[NSWindow deminiaturize:].
- * With an older WindowServer the app draws its miniwindows as before.
+ * The tile goes on the bottom row, or into the Dock when the user's
+ * NBMinimizeStyle is "dock" (WS_SERVER_MINIMIZE_WHERE; the bottom row
+ * while no Dock is connected). With an older WindowServer the app
+ * draws its miniwindows as before.
  */
 
 #ifndef _NextBSDServer_h_INCLUDE
