@@ -152,6 +152,28 @@ NSMutableDictionary	*pasteboards = nil;
 + (void) _localServer: (id<GSPasteboardSvr>)s;
 @end
 
+/*
+ * Send every array gpbs returns to a client by copy.
+ *
+ * GSPasteboardObj declares -typesAndChangeCount: as returning a bycopy
+ * NSArray, but NSConnection encodes a method's return value without
+ * looking at its bycopy qualifier, and NSArray is otherwise sent by
+ * reference.  So -[NSPasteboard types] handed the client a proxy for the
+ * array in gpbs.  A client that walked that proxy with for-in sent
+ * -countByEnumeratingWithState:objects:count: back to gpbs, where the
+ * mutable array copied all its elements into the one-object buffer that
+ * distributed objects decodes for the objects: argument.  With two or more
+ * types on the pasteboard that overflowed the heap and gpbs crashed with
+ * SIGSEGV, and the client got junk for every type after the first.
+ * gpbs never needs to share an array by reference, so always copy.
+ */
+@implementation NSArray (GPBSByCopy)
+- (id) replacementObjectForPortCoder: (NSPortCoder*)aCoder
+{
+  return self;
+}
+@end
+
 @interface PasteboardData: NSObject
 {
   NSData	*data;
