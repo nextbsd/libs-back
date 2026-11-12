@@ -158,6 +158,14 @@ typedef struct nextbsd_cursor
 /* Keep the local copy of the stacking order (op is NSWindowAbove or
    NSWindowBelow, rel a window number or 0). */
 - (void) _stackPlace: (nextbsd_window_t *)w op: (int)op relativeTo: (int)rel;
+/* Make the app's modal window key when it comes on screen. */
+- (void) _focusModalWindow: (nextbsd_window_t *)w;
+- (void) _postFocusIn: (int)win;
+/* Keep menu windows (submenu and pop-up levels) on screen. */
+- (BOOL) _isMenuLevel: (int)level;
+- (NSRect) _supermenuFrame: (int)win;
+- (NSRect) _menuFrameOnScreen: (NSRect)frame window: (nextbsd_window_t *)w;
+- (void) _keepMenuOnScreen: (nextbsd_window_t *)w;
 @end
 
 @interface NextBSDServer (Events)

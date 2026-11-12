@@ -39,6 +39,7 @@
 #include <AppKit/NSEvent.h>
 #include <AppKit/NSWindow.h>
 #include <AppKit/NSMenu.h>
+#include <AppKit/NSMenuView.h>
 #include <Foundation/NSArray.h>
 #include <Foundation/NSConnection.h>
 #include <Foundation/NSDebug.h>
@@ -666,12 +667,144 @@ watchedModes(void)
       return;
     }
   [self updateFlags: w];
+  [self _keepMenuOnScreen: w];
   [self _stackPlace: w op: op relativeTo: otherWin];
   w->visible = YES;
   w->miniaturized = NO;
   ws_window_order(conn, w->number,
 		  op == NSWindowBelow ? WS_ORDER_BELOW : WS_ORDER_ABOVE,
 		  otherWin > 0 ? (uint32_t)otherWin : 0);
+  [self _focusModalWindow: w];
+}
+
+/*
+ * -[NSApplication beginModalSessionForWindow:] asks the panel to become
+ * key before ordering it in, and -makeKeyWindow does nothing for a
+ * window that isn't visible yet. Under X11 the window manager focuses
+ * the newly mapped panel and libs-gui makes it key on the FocusIn; do
+ * what the window manager does: when the app's modal window (an alert,
+ * a modal panel or a sheet) comes on screen without being key, tell it
+ * it has the focus. Closing it gives the key window back through
+ * libs-gui's -_lossOfKeyOrMainWindow and -setinputfocus:.
+ */
+- (void) _focusModalWindow: (nextbsd_window_t *)w
+{
+  NSWindow *nswin;
+
+  if (NSApp == nil || [NSApp isActive] == NO
+      || (w->flags & WS_WINDOW_NO_KEY))
+    return;
+  nswin = GSWindowWithNumber(w->number);
+  if (nswin == nil || nswin != [NSApp modalWindow]
+      || [nswin isKeyWindow] || [nswin canBecomeKeyWindow] == NO)
+    return;
+  [self _postFocusIn: w->number];
+}
+
+- (void) _postFocusIn: (int)win
+{
+  NSEvent *e;
+
+  e = [NSEvent otherEventWithType: NSAppKitDefined
+			 location: NSZeroPoint
+		    modifierFlags: 0
+			timestamp: 0
+		     windowNumber: win
+			  context: GSCurrentContext()
+			  subtype: GSAppKitWindowFocusIn
+			    data1: 0
+			    data2: 0];
+  [self postEvent: e atStart: NO];
+}
+
+/*
+ * Menus (submenus, pop-up and context menus) are placed where libs-gui
+ * computes, centred on the pointer or to the right of their supermenu,
+ * which can run off the right or bottom edge of the screen; under X11
+ * the window manager keeps them on screen. Shift a menu window so it is
+ * fully on screen, along each axis it fits on, and tell the NSWindow
+ * where it went. A submenu that would run off the right edge opens on
+ * the left of its supermenu instead, so it doesn't cover it. A menu
+ * taller than the screen is left alone vertically, so libs-gui can
+ * still scroll it.
+ */
+- (BOOL) _isMenuLevel: (int)level
+{
+  return level == NSSubmenuWindowLevel || level == NSPopUpMenuWindowLevel;
+}
+
+/* The frame of the menu window a submenu window opens from, or
+   NSZeroRect. The supermenu may still be on its way on screen (libs-gui
+   can show the submenu while it orders the supermenu in), so this asks
+   our own record of it, which has its final frame. */
+- (NSRect) _supermenuFrame: (int)win
+{
+  NSWindow	   *nswin = GSWindowWithNumber(win);
+  NSView	   *view = [nswin contentView];
+  NSMenu	   *menu, *sup;
+  nextbsd_window_t *s;
+
+  /* A menu shown transiently (a context menu and its submenus) has
+     its menu view inside the transient window's content view. */
+  if (![view isKindOfClass: [NSMenuView class]]
+      && [[view subviews] count] == 1)
+    view = [[view subviews] objectAtIndex: 0];
+  if (![view isKindOfClass: [NSMenuView class]])
+    return NSZeroRect;
+  menu = [(NSMenuView *)view menu];
+  sup = [menu supermenu];
+  if (sup == nil || [menu isTornOff])
+    return NSZeroRect;
+  s = [self windowWithNumber: [[[sup menuRepresentation] window] windowNumber]];
+  if (s == NULL || s->number == win)
+    return NSZeroRect;
+  return s->frame;
+}
+
+- (NSRect) _menuFrameOnScreen: (NSRect)frame window: (nextbsd_window_t *)w
+{
+  CGFloat sw = screen.width, sh = screen.height;
+  NSRect  sup;
+
+  if (![self _isMenuLevel: w->level] || sw <= 0 || sh <= 0)
+    return frame;
+  if (NSWidth(frame) <= sw)
+    {
+      if (NSMaxX(frame) > sw)
+	{
+	  sup = [self _supermenuFrame: w->number];
+	  if (!NSIsEmptyRect(sup) && NSMinX(frame) >= NSMidX(sup)
+	      && NSMinX(sup) - NSWidth(frame) >= 0)
+	    frame.origin.x = NSMinX(sup) - NSWidth(frame);
+	  else
+	    frame.origin.x = sw - NSWidth(frame);
+	}
+      if (NSMinX(frame) < 0)
+	frame.origin.x = 0;
+    }
+  if (NSHeight(frame) <= sh)
+    {
+      if (NSMinY(frame) < 0)
+	frame.origin.y = 0;
+      if (NSMaxY(frame) > sh)
+	frame.origin.y = sh - NSHeight(frame);
+    }
+  return frame;
+}
+
+- (void) _keepMenuOnScreen: (nextbsd_window_t *)w
+{
+  NSRect    frame = [self _menuFrameOnScreen: w->frame window: w];
+  ws_rect_t r;
+
+  if (NSEqualRects(frame, w->frame))
+    return;
+  NSDebugLLog(@"NextBSD", @"menu window %d kept on screen: %@ -> %@",
+	      w->number, NSStringFromRect(w->frame), NSStringFromRect(frame));
+  w->frame = frame;
+  r = [self wsRectFromNSRect: frame];
+  ws_window_set_frame(conn, w->number, &r);
+  [self _notifyFrame: w post: NO];
 }
 
 - (void) movewindow: (NSPoint)loc : (int)win
@@ -694,6 +827,7 @@ watchedModes(void)
   if (w == NULL)
     return;
   NSDebugLLog(@"NextBSD", @"placewindow %d: %@", win, NSStringFromRect(rect));
+  rect = [self _menuFrameOnScreen: rect window: w];
   if (!NSEqualRects(rect, w->frame))
     {
       w->frame = rect;

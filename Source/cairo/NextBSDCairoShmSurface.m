@@ -257,6 +257,23 @@ union_rect(BOOL have, NSRect a, NSRect b)
   [self commit];
 }
 
+/*
+ * -[NSWindow flushWindow] never calls -flushwindowrect:: for a window
+ * with NSBackingStoreNonretained (an NSComboBox's drop-down list, for
+ * one); it only flushes the graphics context, which ends up here. The
+ * X11 surface draws straight into the window, but this one draws into
+ * the back store, so put all of it on screen.
+ */
+- (void) flush
+{
+  nextbsd_window_t *win = (nextbsd_window_t *)gsDevice;
+
+  if (window == 0 || win == NULL || win->surface != self
+      || win->type != NSBackingStoreNonretained)
+    return;
+  [self handleExposeRect: NSMakeRect(0, 0, width, height)];
+}
+
 - (BOOL) bufferReleased: (uint32_t)bufferId
 {
   int i;
