@@ -23,12 +23,15 @@
 */
 
 #include "config.h"
+#include <AppKit/NSApplication.h>
 #include <AppKit/NSBitmapImageRep.h>
 #include <AppKit/NSColor.h>
 #include <AppKit/NSCursor.h>
+#include <AppKit/NSEvent.h>
 #include <AppKit/NSGraphics.h>
 #include <AppKit/NSImage.h>
 #include <Foundation/NSDebug.h>
+#include <Foundation/NSMapTable.h>
 
 #include <stdlib.h>
 
@@ -63,6 +66,43 @@ ws_cursor_kind(int style)
 {
   [self standardcursor: GSArrowCursor : (void **)&arrowCursor];
   currentCursor = arrowCursor;
+#ifdef WS_SERVER_WINDOW_CURSOR
+  windowCursors = (ws_server_flags(conn) & WS_SERVER_WINDOW_CURSOR) != 0;
+#endif
+}
+
+/*
+ * The window a cursor change is for: the window of the mouse event
+ * libs-gui is handling (cursor rectangles, a view's -mouseMoved:), else
+ * the one the pointer was last seen over. During a drag that's the
+ * window the button went down in, whose cursor WindowServer shows
+ * wherever the pointer is.
+ */
+- (nextbsd_window_t *) _cursorWindow
+{
+  NSEvent	   *e = (NSApp != nil) ? [NSApp currentEvent] : nil;
+  nextbsd_window_t *w = NULL;
+
+  if (e != nil)
+    {
+      switch ([e type])
+	{
+	case NSLeftMouseDown: case NSLeftMouseUp:
+	case NSRightMouseDown: case NSRightMouseUp:
+	case NSOtherMouseDown: case NSOtherMouseUp:
+	case NSMouseMoved: case NSLeftMouseDragged:
+	case NSRightMouseDragged: case NSOtherMouseDragged:
+	case NSMouseEntered: case NSMouseExited:
+	case NSCursorUpdate: case NSScrollWheel:
+	  w = [self windowWithNumber: [e windowNumber]];
+	  break;
+	default:
+	  break;
+	}
+    }
+  if (w == NULL && pointerWindow != 0)
+    w = [self windowWithNumber: pointerWindow];
+  return w;
 }
 
 - (void) hidecursor
@@ -156,7 +196,35 @@ ws_cursor_kind(int style)
 {
   nextbsd_cursor_t *c = cid;
 
-  if (c == NULL || c == currentCursor)
+  if (c == NULL)
+    return;
+#ifdef WS_SERVER_WINDOW_CURSOR
+  if (windowCursors)
+    {
+      nextbsd_window_t *w = [self _cursorWindow];
+
+      /* The window keeps its cursor: WindowServer shows it whenever the
+	 pointer is over the window, other windows of the app keep
+	 theirs. No window yet: the connection's, for every window that
+	 never had one of its own. */
+      currentCursor = c;
+      if (w != NULL)
+	{
+	  if (w->cursor != c
+	      && ws_window_set_cursor(conn, w->number, c->kind, c->image,
+				      c->hot_x, c->hot_y) == 0)
+	    {
+	      w->cursor = c;
+	      NSDebugLLog(@"NextBSDCursor", @"window %d cursor %u",
+			  w->number, c->kind);
+	    }
+	  return;
+	}
+      ws_set_cursor(conn, c->kind, c->image, c->hot_x, c->hot_y);
+      return;
+    }
+#endif
+  if (c == currentCursor)
     return;
   currentCursor = c;
   ws_set_cursor(conn, c->kind, c->image, c->hot_x, c->hot_y);
@@ -170,6 +238,19 @@ ws_cursor_kind(int style)
     return;
   if (c == currentCursor)
     currentCursor = NULL;
+  /* WindowServer keeps its own reference to a window's cursor image;
+     the next cursor for those windows has to be sent again. */
+  if (windowCursors)
+    {
+      NSMapEnumerator	en = NSEnumerateMapTable(windows);
+      void	       *key;
+      nextbsd_window_t *w;
+
+      while (NSNextMapEnumeratorPair(&en, &key, (void **)&w))
+	if (w->cursor == c)
+	  w->cursor = NULL;
+      NSEndMapTableEnumeration(&en);
+    }
   if (c->image != NULL)
     ws_buffer_destroy(conn, c->image);
   free(c);

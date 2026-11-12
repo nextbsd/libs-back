@@ -78,6 +78,20 @@
  * height (WS_SERVER_MENU_BAR), so the usable area and a top Dock stay
  * below the bar, keeps the bar at the top, and the bar's menus drop
  * down over a top Dock.
+ *
+ * Cursors: on servers with WS_SERVER_WINDOW_CURSOR, -setcursor: gives
+ * the cursor to the window the pointer is over (the window of the mouse
+ * event libs-gui is handling), so WindowServer shows each window's own
+ * cursor the moment the pointer enters it, without waiting for the app.
+ * Older servers get the connection's cursor, as before.
+ *
+ * Menus and pop-ups (WS_SERVER_POINTER_GRAB): while a pop-up or context
+ * menu is open, or a menu of the Mac menu bar or of a window's menu, the
+ * backend holds a WS_GRAB_OUTSIDE pointer grab. The first press outside
+ * the app's windows then comes as WS_EVENT_POINTER_OUTSIDE, and the
+ * backend gives the menu tracking loop a click there, which closes the
+ * menu the way a click on one of the app's own windows does. Older
+ * servers leave such a menu open until the app gets a click.
  */
 
 #ifndef _NextBSDServer_h_INCLUDE
@@ -106,6 +120,8 @@ typedef struct nextbsd_window
   BOOL		 tiled;		/* minimized to a WindowServer tile */
   NSBackingStoreType type;
   NextBSDCairoShmSurface *surface; /* current surface, not retained */
+  struct nextbsd_cursor *cursor; /* the window's cursor WindowServer has
+				   (WS_SERVER_WINDOW_CURSOR), NULL unknown */
 } nextbsd_window_t;
 
 /* Cursor handles given to libs-gui (the cid of the cursor methods). */
@@ -132,6 +148,11 @@ typedef struct nextbsd_cursor
   nextbsd_cursor_t	*currentCursor;
   nextbsd_cursor_t	*arrowCursor;
   BOOL			 cursorHidden;
+  BOOL			 windowCursors;	/* WS_SERVER_WINDOW_CURSOR */
+  /* the popup grab (WS_SERVER_POINTER_GRAB, WS_GRAB_OUTSIDE) held while
+     a menu or pop-up is open */
+  BOOL			 pointerGrabs;
+  BOOL			 popupGrabbed;
   float			 scrollMultiplier;
   float			 scrollPixelsPerLine;
   /* the usable area (WS_SERVER_USABLE_AREA), WindowServer coordinates */
@@ -226,6 +247,12 @@ typedef struct nextbsd_cursor
 - (void) _keepMenuOnScreen: (nextbsd_window_t *)w;
 /* The usable area changed: move menus out of the Dock's strip. */
 - (void) _keepMenusOutOfDock;
+/* Hold a WS_GRAB_OUTSIDE pointer grab while a menu or pop-up is open,
+   and let go when none is (WS_SERVER_POINTER_GRAB). */
+- (void) _updatePopupGrab;
+- (void) _popupGrabEnded;
+/* The app's topmost open menu or pop-up that a click outside closes. */
+- (nextbsd_window_t *) _topPopupMenu;
 @end
 
 @interface NextBSDServer (Events)

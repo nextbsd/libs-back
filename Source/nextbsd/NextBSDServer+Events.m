@@ -26,9 +26,13 @@
 #include <AppKit/NSApplication.h>
 #include <AppKit/NSEvent.h>
 #include <AppKit/NSGraphics.h>
+#include <AppKit/NSInterfaceStyle.h>
+#include <AppKit/NSMenu.h>
+#include <AppKit/NSMenuView.h>
 #include <AppKit/NSText.h>
 #include <AppKit/NSWindow.h>
 #include <Foundation/NSDebug.h>
+#include <Foundation/NSRunLoop.h>
 #include <Foundation/NSString.h>
 
 #include <string.h>
@@ -314,6 +318,88 @@ utf8_string(const char *text, size_t size)
   [self postEvent: e atStart: NO];
 }
 
+#ifdef WS_SERVER_POINTER_GRAB
+/*
+ * After a click outside the app ended the menu tracking: libs-gui leaves
+ * a menu of the Mac menu bar, or of a window's menu bar, open when the
+ * click that ends the tracking isn't on a menu (a click in one of the
+ * app's own windows does the same). A click on another app or on the
+ * desktop means the user is done with it: close it.
+ */
+- (void) _closeMenuLeftOpen
+{
+  NSMenu     *main = (NSApp != nil) ? [NSApp mainMenu] : nil;
+  NSMenuView *view;
+
+  if (main == nil || [main attachedMenu] == nil
+      || NSInterfaceStyleForKey(@"NSMenuInterfaceStyle", nil)
+	 == NSNextStepInterfaceStyle)
+    return;
+  NSDebugLLog(@"NextBSD", @"closing the menu bar's open menu");
+  view = (NSMenuView *)[main menuRepresentation];
+  if ([view isKindOfClass: [NSMenuView class]])
+    {
+      [view setHighlightedItemIndex: -1];
+      [view detachSubmenu];
+    }
+  if ([main attachedMenu] != nil)
+    [[main attachedMenu] close];
+}
+
+/*
+ * The first press outside the app's windows while the popup grab was
+ * held; WindowServer has ended the grab. If a menu is still open and
+ * libs-gui is tracking it, end the tracking with a click at the
+ * pointer, which is outside every menu: the menu closes, no item is
+ * chosen. The press itself goes on to the window or desktop under it.
+ */
+- (void) _pointerOutside: (const ws_event_t *)ev
+{
+  const ws_event_pointer_t *p = &ev->u.pointer;
+  nextbsd_window_t	   *w;
+  NSPoint		    loc;
+  int			    i;
+
+  [self _popupGrabEnded];
+  pointerScreen = NSMakePoint(p->screen_x, p->screen_y);
+  pointerWindow = 0;
+  w = [self _topPopupMenu];
+  if (w == NULL || ![[[NSRunLoop currentRunLoop] currentMode]
+		      isEqualToString: NSEventTrackingRunLoopMode])
+    return;
+  NSDebugLLog(@"NextBSD", @"click outside the app: closing menu window %d",
+	      w->number);
+  loc = NSMakePoint(p->screen_x - NSMinX(w->frame),
+		    ([self screenHeight] - p->screen_y) - NSMinY(w->frame));
+  for (i = 0; i < 2; i++)
+    {
+      NSEvent *e;
+
+      e = [NSEvent mouseEventWithType: i == 0 ? NSLeftMouseDown
+						: NSLeftMouseUp
+			     location: loc
+			modifierFlags: 0
+			    timestamp: [self _timestamp: ev]
+			 windowNumber: w->number
+			      context: GSCurrentContext()
+			  eventNumber: ev->hdr.serial
+			   clickCount: 1
+			     pressure: i == 0 ? 1.0 : 0.0
+			 buttonNumber: 0
+			       deltaX: 0.0
+			       deltaY: 0.0
+			       deltaZ: 0.0];
+      [self postEvent: e atStart: NO];
+    }
+  /* Once the tracking loop is done with the click. */
+  [self performSelector: @selector(_closeMenuLeftOpen)
+	     withObject: nil
+	     afterDelay: 0.0
+		inModes: [NSArray arrayWithObjects: NSDefaultRunLoopMode,
+				  NSModalPanelRunLoopMode, nil]];
+}
+#endif
+
 - (void) _scrollEvent: (const ws_event_t *)ev
 {
   const ws_event_scroll_t *s = &ev->u.scroll;
@@ -581,6 +667,16 @@ utf8_string(const char *text, size_t size)
     case WS_EVENT_FLAGS_CHANGED:
       [self _flagsEvent: ev];
       break;
+
+#ifdef WS_SERVER_POINTER_GRAB
+    case WS_EVENT_POINTER_OUTSIDE:
+      [self _pointerOutside: ev];
+      break;
+
+    case WS_EVENT_POINTER_UNGRABBED:
+      [self _popupGrabEnded];
+      break;
+#endif
 
     case WS_EVENT_ERROR:
       NSDebugLLog(@"NextBSD", @"WindowServer error for request %u "
