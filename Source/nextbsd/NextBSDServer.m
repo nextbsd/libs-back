@@ -40,6 +40,7 @@
 #include <AppKit/NSWindow.h>
 #include <AppKit/NSMenu.h>
 #include <AppKit/NSMenuView.h>
+#include <AppKit/NSScreen.h>
 #include <Foundation/NSArray.h>
 #include <Foundation/NSConnection.h>
 #include <Foundation/NSDebug.h>
@@ -56,6 +57,8 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include <objc/runtime.h>
 
 #include "nextbsd/NextBSDServer.h"
 #include "nextbsd/NextBSDCairoShmSurface.h"
@@ -109,6 +112,49 @@ minimizeWhere(void)
     ? WS_MINIMIZE_INTO_DOCK : WS_MINIMIZE_BOTTOM_ROW;
 }
 #endif
+
+/*
+ * NSScreen's visibleFrame. libs-gui works it out in -[NSScreen
+ * visibleFrame] from the screen's frame alone (taking off a Mac menu
+ * bar); there is no GSDisplayServer method for it that a backend could
+ * answer, so the Dock's strip never came off. Without changing libs-gui,
+ * the backend wraps that one method when WindowServer reports a usable
+ * area: the wrapper keeps libs-gui's answer and intersects it with the
+ * current server's -visibleFrameForScreen:. Everything in libs-gui that
+ * uses visibleFrame (main menu placement, -center, cascading,
+ * -constrainFrameRect:toScreen:, zooming, saved frames) then follows it.
+ */
+static NSRect (*libsGuiVisibleFrame)(id, SEL) = NULL;
+
+static NSRect
+nextbsdVisibleFrame(id scr, SEL cmd)
+{
+  NSRect	   vis = libsGuiVisibleFrame(scr, cmd);
+  GSDisplayServer *srv = GSCurrentServer();
+  NSRect	   usable;
+
+  if (srv == nil || ![srv respondsToSelector: @selector(visibleFrameForScreen:)])
+    return vis;
+  usable = [(NextBSDServer *)srv visibleFrameForScreen: [scr screenNumber]];
+  if (NSIsEmptyRect(usable))
+    return vis;
+  usable = NSIntersectionRect(vis, usable);
+  return NSIsEmptyRect(usable) ? vis : usable;
+}
+
+static void
+wrapVisibleFrame(void)
+{
+  Method m;
+
+  if (libsGuiVisibleFrame != NULL)
+    return;
+  m = class_getInstanceMethod([NSScreen class], @selector(visibleFrame));
+  if (m == NULL)
+    return;
+  libsGuiVisibleFrame = (NSRect (*)(id, SEL))method_getImplementation(m);
+  method_setImplementation(m, (IMP)nextbsdVisibleFrame);
+}
 
 /* The connection, shared with the cairo surfaces. */
 static ws_connection_t *sharedConnection = NULL;
@@ -198,6 +244,12 @@ watchedModes(void)
     }
   sharedConnection = conn;
   screen = *ws_main_screen(conn);
+#ifdef WS_SERVER_USABLE_AREA
+  /* The screen minus the Dock's strip, as NSScreen's visibleFrame. */
+  haveUsableArea = ws_usable_area(conn, &usable) == 0;
+  if (haveUsableArea)
+    wrapVisibleFrame();
+#endif
   /* WindowServer draws the minimized windows; older servers leave
      that to libs-gui's miniwindows. */
   serverMinimizes = (ws_server_flags(conn) & WS_SERVER_MINIMIZE) != 0;
@@ -335,6 +387,70 @@ watchedModes(void)
 	    strerror(errno));
       exit(EXIT_FAILURE);
     }
+  /* A screen change comes as screen-changed, usable-area and the
+     window-frame events of the windows WindowServer moved; tell the
+     windows and the app once they're all in. */
+  if (screenParamsPending)
+    {
+      [self _notifyAllFrames];
+      [self _postScreenParameters];
+    }
+}
+
+/*
+ * After a screen change, tell every NSWindow its frame. Windows without
+ * a parent go first: libs-gui moves a window's child windows with it
+ * (an icon window on the Dock), and a child told its own new frame
+ * first would then move a second time. A child the parent moved is
+ * placed where libs-gui puts it (-placewindow::), so it stays with its
+ * parent, and has nothing left to hear.
+ */
+- (void) _notifyAllFrames
+{
+  NSMapEnumerator   e;
+  void		   *key;
+  nextbsd_window_t *w;
+  int		    pass;
+
+  for (pass = 0; pass < 2; pass++)
+    {
+      e = NSEnumerateMapTable(windows);
+      while (NSNextMapEnumeratorPair(&e, &key, (void **)&w))
+	{
+	  NSWindow *nswin = GSWindowWithNumber(w->number);
+
+	  if ((pass == 0) == ([nswin parentWindow] == nil))
+	    [self _notifyFrame: w post: NO];
+	}
+      NSEndMapTableEnumeration(&e);
+    }
+}
+
+/*
+ * The screen changed: NSScreen reads the new frame,
+ * and the app hears NSApplicationDidChangeScreenParametersNotification.
+ * Every window's frame is already right (-_screenChanged:), but
+ * -[NSWindow applicationDidChangeScreenParameters:] moves a window that
+ * isn't inside the new screen once more by the change in height, to
+ * keep its top where it was, which WindowServer's top-left coordinates
+ * already did. -placewindow:: leaves out that second move while the
+ * notification goes out.
+ */
+- (void) _postScreenParameters
+{
+  screenParamsPending = NO;
+  [NSScreen resetScreens];
+  postingHeightDelta = pendingHeightDelta;
+  pendingHeightDelta = 0;
+  NS_DURING
+    [[NSNotificationCenter defaultCenter]
+      postNotificationName: NSApplicationDidChangeScreenParametersNotification
+		    object: NSApp];
+  NS_HANDLER
+    postingHeightDelta = 0;
+    [localException raise];
+  NS_ENDHANDLER
+  postingHeightDelta = 0;
 }
 
 - (void) scheduleDispatch
@@ -531,6 +647,70 @@ watchedModes(void)
 - (void) setScreenInfo: (const ws_screen_info_t *)info
 {
   screen = *info;
+}
+
+- (NSRect) visibleFrameForScreen: (int)aScreen
+{
+  if (!haveUsableArea || usable.width <= 0 || usable.height <= 0)
+    return NSZeroRect;
+  return [self nsRectFromWSRect: usable];
+}
+
+/*
+ * The screen changed size or mode. WindowServer keeps window frames in
+ * top-left coordinates, so in GNUstep's bottom-left ones every window
+ * moves by the change in height. The NSWindows hear it once the
+ * window-frame events of the windows WindowServer moved onto the
+ * smaller screen are in too (-_notifyAllFrames), before the
+ * notification.
+ */
+- (void) _screenChanged: (const ws_screen_info_t *)info
+{
+  CGFloat	    delta;
+  NSMapEnumerator   e;
+  void		   *key;
+  nextbsd_window_t *w;
+
+  if (info->screen_id != screen.screen_id)
+    return;
+  delta = (CGFloat)info->height - (CGFloat)screen.height;
+  [self setScreenInfo: info];
+  if (!haveUsableArea)
+    {
+      usable.x = usable.y = 0;
+      usable.width = (int32_t)info->width;
+      usable.height = (int32_t)info->height;
+    }
+  if (delta != 0)
+    {
+      e = NSEnumerateMapTable(windows);
+      while (NSNextMapEnumeratorPair(&e, &key, (void **)&w))
+	w->frame.origin.y += delta;
+      NSEndMapTableEnumeration(&e);
+    }
+  pendingHeightDelta += delta;
+  screenParamsPending = YES;
+  NSDebugLLog(@"NextBSD", @"screen changed: %ux%u", info->width,
+	      info->height);
+}
+
+/*
+ * The Dock moved or changed size (or the screen changed, after
+ * -_screenChanged:). NSScreen's visibleFrame follows at once, since the
+ * wrapper asks every time. A Dock change alone posts no
+ * NSApplicationDidChangeScreenParametersNotification: libs-gui answers
+ * it by redisplaying every window, which costs a redraw of the whole
+ * desktop on each Dock move and blanks Terminal's windows until their
+ * next output.
+ */
+- (void) _usableAreaChanged: (ws_rect_t)area
+{
+  if (!haveUsableArea)
+    return;
+  usable = area;
+  NSDebugLLog(@"NextBSD", @"usable area %d,%d %dx%d", area.x, area.y,
+	      area.width, area.height);
+  [self _keepMenusOutOfDock];
 }
 
 - (void *) serverDevice
@@ -849,33 +1029,67 @@ watchedModes(void)
   return s->frame;
 }
 
+/*
+ * The NeXT main menu sits at the main-menu level, under the Dock: keep
+ * it out of the Dock's strip (the screen outside the usable area),
+ * wherever it's put, libs-gui's default place, a saved NSMenuLocations
+ * position or a drag, and when the Dock moves. Anywhere else it may go,
+ * even partly off the screen.
+ */
+- (NSRect) _frameOutOfDock: (NSRect)frame
+{
+  NSRect  u = [self visibleFrameForScreen: screen.screen_id];
+  CGFloat sw = screen.width, sh = screen.height;
+
+  if (NSIsEmptyRect(u))
+    return frame;
+  if (NSMinX(u) > 0 && NSMinX(frame) < NSMinX(u))
+    frame.origin.x = NSMinX(u);				/* left Dock */
+  else if (NSMaxX(u) < sw && NSMaxX(frame) > NSMaxX(u)
+	   && NSWidth(frame) <= NSWidth(u))
+    frame.origin.x = NSMaxX(u) - NSWidth(frame);	/* right Dock */
+  if (NSMaxY(u) < sh && NSMaxY(frame) > NSMaxY(u)
+      && NSHeight(frame) <= NSHeight(u))
+    frame.origin.y = NSMaxY(u) - NSHeight(frame);	/* top Dock */
+  else if (NSMinY(u) > 0 && NSMinY(frame) < NSMinY(u))
+    frame.origin.y = NSMinY(u);				/* bottom Dock */
+  return frame;
+}
+
 - (NSRect) _menuFrameOnScreen: (NSRect)frame window: (nextbsd_window_t *)w
 {
-  CGFloat sw = screen.width, sh = screen.height;
-  NSRect  sup;
+  NSRect  b = NSMakeRect(0, 0, screen.width, screen.height);
+  NSRect  sup, u;
 
-  if (![self _isMenuLevel: w->level] || sw <= 0 || sh <= 0)
+  if (w->level == NSMainMenuWindowLevel)
+    return [self _frameOutOfDock: frame];
+  if (![self _isMenuLevel: w->level] || NSIsEmptyRect(b))
     return frame;
-  if (NSWidth(frame) <= sw)
+  /* Submenus and torn-off menus are under the Dock too: keep them in
+     the usable area. Pop-up menus are above it. */
+  u = [self visibleFrameForScreen: screen.screen_id];
+  if (w->level == NSSubmenuWindowLevel && !NSIsEmptyRect(u))
+    b = u;
+  if (NSWidth(frame) <= NSWidth(b))
     {
-      if (NSMaxX(frame) > sw)
+      if (NSMaxX(frame) > NSMaxX(b))
 	{
 	  sup = [self _supermenuFrame: w->number];
 	  if (!NSIsEmptyRect(sup) && NSMinX(frame) >= NSMidX(sup)
-	      && NSMinX(sup) - NSWidth(frame) >= 0)
+	      && NSMinX(sup) - NSWidth(frame) >= NSMinX(b))
 	    frame.origin.x = NSMinX(sup) - NSWidth(frame);
 	  else
-	    frame.origin.x = sw - NSWidth(frame);
+	    frame.origin.x = NSMaxX(b) - NSWidth(frame);
 	}
-      if (NSMinX(frame) < 0)
-	frame.origin.x = 0;
+      if (NSMinX(frame) < NSMinX(b))
+	frame.origin.x = NSMinX(b);
     }
-  if (NSHeight(frame) <= sh)
+  if (NSHeight(frame) <= NSHeight(b))
     {
-      if (NSMinY(frame) < 0)
-	frame.origin.y = 0;
-      if (NSMaxY(frame) > sh)
-	frame.origin.y = sh - NSHeight(frame);
+      if (NSMinY(frame) < NSMinY(b))
+	frame.origin.y = NSMinY(b);
+      if (NSMaxY(frame) > NSMaxY(b))
+	frame.origin.y = NSMaxY(b) - NSHeight(frame);
     }
   return frame;
 }
@@ -893,6 +1107,22 @@ watchedModes(void)
   r = [self wsRectFromNSRect: frame];
   ws_window_set_frame(conn, w->number, &r);
   [self _notifyFrame: w post: NO];
+}
+
+- (void) _keepMenusOutOfDock
+{
+  NSMapEnumerator   e;
+  void		   *key;
+  nextbsd_window_t *w;
+
+  e = NSEnumerateMapTable(windows);
+  while (NSNextMapEnumeratorPair(&e, &key, (void **)&w))
+    {
+      if (w->visible && (w->level == NSMainMenuWindowLevel
+			 || w->level == NSSubmenuWindowLevel))
+	[self _keepMenuOnScreen: w];
+    }
+  NSEndMapTableEnumeration(&e);
 }
 
 - (void) movewindow: (NSPoint)loc : (int)win
@@ -915,6 +1145,12 @@ watchedModes(void)
   if (w == NULL)
     return;
   NSDebugLLog(@"NextBSD", @"placewindow %d: %@", win, NSStringFromRect(rect));
+  /* libs-gui's second move for the screen change (see
+     -_postScreenParameters): the frame is right already. */
+  if (postingHeightDelta != 0 && NSEqualSizes(rect.size, w->frame.size)
+      && NSMinX(rect) == NSMinX(w->frame)
+      && NSMinY(rect) == NSMinY(w->frame) + postingHeightDelta)
+    rect = w->frame;
   rect = [self _menuFrameOnScreen: rect window: w];
   if (!NSEqualRects(rect, w->frame))
     {
@@ -945,7 +1181,11 @@ watchedModes(void)
       /* libs-gui levels are WindowServer levels. */
       ws_window_set_level(conn, w->number, level);
       if (w->visible)
-	[self _stackPlace: w op: NSWindowAbove relativeTo: 0];
+	{
+	  [self _stackPlace: w op: NSWindowAbove relativeTo: 0];
+	  /* the main menu now: out of the Dock's strip */
+	  [self _keepMenuOnScreen: w];
+	}
     }
   [self updateFlags: w];
 }
