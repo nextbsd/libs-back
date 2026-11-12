@@ -51,6 +51,7 @@
 #include <Foundation/NSTimer.h>
 #include <Foundation/NSUserDefaults.h>
 #include <Foundation/NSValue.h>
+#include <GNUstepGUI/GSTheme.h>
 
 #include <errno.h>
 #include <stdlib.h>
@@ -58,6 +59,43 @@
 
 #include "nextbsd/NextBSDServer.h"
 #include "nextbsd/NextBSDCairoShmSurface.h"
+
+/*
+ * A NextBSD desktop setting: the user's choice (the key in the user's
+ * defaults, from Workspace Preferences), else the active theme's default
+ * (the key at the top of its Info.plist), else the built-in one. This is
+ * the lookup in nextbsd-theme's NBDesktopSettings.h; keep them in step.
+ */
+static NSString *
+desktopSetting(NSString *key, NSArray *allowed, NSString *builtin)
+{
+  id value;
+
+  value = [[NSUserDefaults standardUserDefaults] objectForKey: key];
+  if ([value isKindOfClass: [NSString class]]
+      && [allowed containsObject: value])
+    return value;
+  value = [[[GSTheme theme] infoDictionary] objectForKey: key];
+  if ([value isKindOfClass: [NSString class]]
+      && [allowed containsObject: value])
+    return value;
+  return builtin;
+}
+
+/* The minimize style: "nextstep" (libs-gui draws miniwindows), "previews"
+   (WindowServer draws tiles) or "dock" (the tiles go to the Dock). */
+static NSString *
+minimizeStyle(void)
+{
+  static NSArray *styles = nil;
+
+  if (styles == nil)
+    styles = [[NSArray alloc] initWithObjects:
+			    @"nextstep", @"previews", @"dock", nil];
+  /* Pick up a change Workspace Preferences just saved. */
+  [[NSUserDefaults standardUserDefaults] synchronize];
+  return desktopSetting(@"NBMinimizeStyle", styles, @"previews");
+}
 
 /* The connection, shared with the cairo surfaces. */
 static ws_connection_t *sharedConnection = NULL;
@@ -609,7 +647,15 @@ watchedModes(void)
   w->miniaturized = YES;
   w->visible = NO;
   [self _stackRemove: w->number];
-  if (serverMinimizes)
+  /* The minimize style decides, as for -appOwnsMiniwindow just before.
+     libs-gui keeps a window's miniwindow once it has made one and shows
+     it again on every later minimize, so a window first minimized in the
+     NeXT style can still get a tile: -orderwindow::: then keeps its
+     miniwindow out. Without a miniwindow there's always a tile. */
+  w->tiled = serverMinimizes
+    && ([GSWindowWithNumber(win) counterpart] == nil
+	|| ![minimizeStyle() isEqualToString: @"nextstep"]);
+  if (w->tiled)
     {
       /* WindowServer orders the window out and shows a live tile of it,
 	 badged with the app icon, until the app orders it in again. */
@@ -631,11 +677,33 @@ watchedModes(void)
   return NO;
 }
 
+/* A libs-gui miniwindow whose window is minimized to a WindowServer
+   tile instead (the style changed since the miniwindow was made). */
+- (BOOL) _isMiniwindowOfTiledWindow: (int)win
+{
+  NSWindow	   *mini = GSWindowWithNumber(win);
+  NSWindow	   *main;
+  nextbsd_window_t *mw;
+
+  if (mini == nil || ([mini styleMask] & NSMiniWindowMask) == 0)
+    return NO;
+  main = [mini counterpart];
+  if (main == nil)
+    return NO;
+  mw = [self windowWithNumber: [main windowNumber]];
+  return mw != NULL && mw->tiled;
+}
+
 - (BOOL) appOwnsMiniwindow
 {
   /* With NO, libs-gui makes no miniwindow and leaves minimizing to
-     -miniwindow:. */
-  return serverMinimizes ? NO : YES;
+     -miniwindow:. The NBMinimizeStyle desktop setting chooses, for each
+     window as it's minimized: NeXT miniwindows drawn by libs-gui, or
+     WindowServer's previews. "dock" is previews too; WindowServer hands
+     them to the Dock when its MinimizeIntoDock default is on. */
+  if (!serverMinimizes)
+    return YES;
+  return [minimizeStyle() isEqualToString: @"nextstep"];
 }
 
 - (void) setWindowdevice: (int)win forContext: (NSGraphicsContext *)ctxt
@@ -659,6 +727,8 @@ watchedModes(void)
 
   if (w == NULL)
     return;
+  if (op != NSWindowOut && [self _isMiniwindowOfTiledWindow: win])
+    return;
   if (op == NSWindowOut)
     {
       w->visible = NO;
@@ -671,6 +741,7 @@ watchedModes(void)
   [self _stackPlace: w op: op relativeTo: otherWin];
   w->visible = YES;
   w->miniaturized = NO;
+  w->tiled = NO;
   ws_window_order(conn, w->number,
 		  op == NSWindowBelow ? WS_ORDER_BELOW : WS_ORDER_ABOVE,
 		  otherWin > 0 ? (uint32_t)otherWin : 0);
@@ -1153,7 +1224,7 @@ watchedModes(void)
   en = NSEnumerateMapTable(windows);
   while (NSNextMapEnumeratorPair(&en, &key, (void **)&w))
     {
-      if (w->miniaturized && !w->visible)
+      if (w->miniaturized && w->tiled && !w->visible)
 	[numbers addObject: [NSNumber numberWithInt: w->number]];
     }
   NSEndMapTableEnumeration(&en);

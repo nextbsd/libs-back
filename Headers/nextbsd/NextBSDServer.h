@@ -71,6 +71,7 @@ typedef struct nextbsd_window
   BOOL		 visible;
   BOOL		 ignoresMouse;
   BOOL		 miniaturized;
+  BOOL		 tiled;		/* minimized to a WindowServer tile */
   NSBackingStoreType type;
   NextBSDCairoShmSurface *surface; /* current surface, not retained */
 } nextbsd_window_t;
