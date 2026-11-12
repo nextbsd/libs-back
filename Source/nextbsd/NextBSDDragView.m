@@ -392,6 +392,33 @@ ns_ops(uint32_t ops)
 
 /* ---- the destination ---- */
 
+/*
+ * The drag in the destination window, from where it is on the screen,
+ * worked out when the destination asks: the drag events wait in the
+ * queue, and the destination may move its window before it gets to
+ * them (the Dock moves its tiles to open a drop slot), so a point taken
+ * against the window's frame when WindowServer's event came would be
+ * off by as much as the window moved.
+ */
+- (NSPoint) draggingLocation
+{
+  if ([NextBSDDragView serverDrags] && destWindow != nil)
+    return [destWindow convertScreenToBase: dragPosition];
+  return [super draggingLocation];
+}
+
+- (NSPoint) draggedImageLocation
+{
+  NSPoint loc = [self draggingLocation];
+
+  if (dragSource)
+    {
+      loc.x -= offset.width;
+      loc.y -= offset.height;
+    }
+  return loc;
+}
+
 - (void) _postDragSubtype: (GSAppKitSubtype)subtype
 		   window: (NSWindow *)win
 		  session: (uint32_t)sess
