@@ -34,6 +34,7 @@ nextbsd_OBJC_FILES = \
 NextBSDServer.m \
 NextBSDServer+Events.m \
 NextBSDServer+Cursor.m \
+NextBSDServer+MenuStyle.m \
 
 -include GNUmakefile.preamble
 
