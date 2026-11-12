@@ -98,7 +98,7 @@ minimizeStyle(void)
 			    @"nextstep", @"previews", @"dock", nil];
   /* Pick up a change Workspace Preferences just saved. */
   [[NSUserDefaults standardUserDefaults] synchronize];
-  return NextBSDDesktopSetting(@"NBMinimizeStyle", styles, @"previews");
+  return NextBSDDesktopSetting(@"NBMinimizeStyle", styles, @"dock");
 }
 
 #ifdef WS_SERVER_MINIMIZE_WHERE
