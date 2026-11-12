@@ -39,6 +39,41 @@
 /* The window WindowServer last made key because we asked it to. */
 static int requestedKeyWindow = 0;
 
+#ifdef WS_SERVER_SCROLL_PHASES
+/*
+ * A scroll event with the phases WindowServer sends for touchpad
+ * scrolls (WS_SCROLL_PHASE_*, the NSEventPhase values). libs-gui's
+ * NSEvent answers -phase and -momentumPhase with NSEventPhaseNone and
+ * has nowhere to keep them, so this subclass does; +mouseEventWithType:
+ * allocates the class it is sent to, and copies keep the ivars.
+ */
+@interface NextBSDScrollEvent : NSEvent
+{
+  NSEventPhase _wsPhase;
+  NSEventPhase _wsMomentumPhase;
+}
+- (void) _setPhase: (NSEventPhase)phase momentumPhase: (NSEventPhase)momentum;
+@end
+
+@implementation NextBSDScrollEvent
+- (void) _setPhase: (NSEventPhase)phase momentumPhase: (NSEventPhase)momentum
+{
+  _wsPhase = phase;
+  _wsMomentumPhase = momentum;
+}
+
+- (NSEventPhase) phase
+{
+  return _wsPhase;
+}
+
+- (NSEventPhase) momentumPhase
+{
+  return _wsMomentumPhase;
+}
+@end
+#endif
+
 /* X keysyms (the values xkbcommon uses) the backend needs to know. */
 enum {
   KS_ISO_Left_Tab = 0xfe20,
@@ -286,6 +321,7 @@ utf8_string(const char *text, size_t size)
   NSEvent		  *e;
   NSPoint		   loc;
   float			   dx, dy;
+  Class			   eventCls = [NSEvent class];
 
   if (w == NULL)
     return;
@@ -301,7 +337,13 @@ utf8_string(const char *text, size_t size)
       dy = -s->dy / scrollPixelsPerLine;
     }
   loc = NSMakePoint(s->x, NSHeight(w->frame) - s->y);
-  e = [NSEvent mouseEventWithType: NSScrollWheel
+#ifdef WS_SERVER_SCROLL_PHASES
+  /* Touchpad scrolls: began, changed, ended (with no delta), then
+     momentum began, changed, ended. */
+  if (s->phase != 0 || s->momentum_phase != 0)
+    eventCls = [NextBSDScrollEvent class];
+#endif
+  e = [eventCls mouseEventWithType: NSScrollWheel
 			 location: loc
 		    modifierFlags: ns_modifiers(s->modifiers)
 			timestamp: [self _timestamp: ev]
@@ -314,6 +356,11 @@ utf8_string(const char *text, size_t size)
 			   deltaX: dx
 			   deltaY: dy
 			   deltaZ: 0.0];
+#ifdef WS_SERVER_SCROLL_PHASES
+  if ([e isKindOfClass: [NextBSDScrollEvent class]])
+    [(NextBSDScrollEvent *)e _setPhase: s->phase
+			 momentumPhase: s->momentum_phase];
+#endif
   [self postEvent: e atStart: NO];
 }
 
