@@ -63,6 +63,21 @@
  * with the screen's height, reset NSScreen and post
  * NSApplicationDidChangeScreenParametersNotification once the events
  * that came with them are handled.
+ *
+ * The menu style (nextbsd/libs-back#3): the NBMenuStyle desktop setting
+ * ("nextstep", "inwindow" or "macmenubar"; the user's value, else the
+ * theme's, else nextstep) picks libs-gui's NSMenuInterfaceStyle: NeXT
+ * floating menus with tear-off, menus in every window
+ * (NSWindows95InterfaceStyle), or a Mac menu bar along the top
+ * (NSMacintoshInterfaceStyle). The backend keeps it in a volatile
+ * defaults domain above the user's, and switches the running app when
+ * Workspace Preferences posts org.nextbsd.DesktopSettingsChanged for
+ * NBMenuStyle or the theme changes, by rebuilding the main menu's
+ * representation the way GSTheme does on a theme change (-[NSMenu
+ * setMain:]). In the Mac style the app tells WindowServer its bar's
+ * height (WS_SERVER_MENU_BAR), so the usable area and a top Dock stay
+ * below the bar, keeps the bar at the top, and the bar's menus drop
+ * down over a top Dock.
  */
 
 #ifndef _NextBSDServer_h_INCLUDE
@@ -83,6 +98,7 @@ typedef struct nextbsd_window
   int		 number;	/* the WindowServer window id */
   NSRect	 frame;		/* GNUstep screen coordinates */
   int		 level;
+  int		 serverLevel;	/* the level WindowServer has (-_serverLevel:) */
   uint32_t	 flags;		/* WS_WINDOW_* last sent to the server */
   BOOL		 visible;
   BOOL		 ignoresMouse;
@@ -131,6 +147,11 @@ typedef struct nextbsd_cursor
   BOOL			 serverMinimizes;
   NSImage		*uploadedIcon;	/* app icon WindowServer has */
   NSTimer		*previewTimer;	/* not retained; the run loop has it */
+  /* the menu style (NextBSDServer+MenuStyle.m) */
+  int			 reportedMenuBar; /* WS_MSG_SET_MENU_BAR sent, -1 none */
+  BOOL			 launched;	/* NSApplicationWillFinishLaunching */
+  NSArray		*tornOffMenus;	/* to show again back in NeXT style */
+  NSArray		*nextMenuOrder;	/* the main menu's items in NeXT style */
 }
 
 /* The connection, for the cairo surfaces. */
@@ -221,5 +242,28 @@ typedef struct nextbsd_cursor
 @interface NextBSDServer (Cursor)
 - (void) setupCursors;
 @end
+
+@interface NextBSDServer (MenuStyle)
+/* At startup (-initWithAttributes:) and when the server goes away. */
+- (void) _setUpMenuStyle;
+- (void) _tearDownMenuStyle;
+/* Look NBMenuStyle up again and switch the app's menus if it changed. */
+- (void) applyMenuStyle;
+/* Tell WindowServer the Mac menu bar's height (0 for no bar). */
+- (void) _reportMenuBar;
+/* The app's main menu shown as the Mac menu bar, and the menus that drop
+   down from it, which open over a top Dock. */
+- (BOOL) _isMacMenuBar: (nextbsd_window_t *)w;
+- (BOOL) _isMacBarMenu: (nextbsd_window_t *)w;
+/* The level WindowServer stacks the window at: libs-gui's, except for
+   the Mac menu bar's menus (above the Dock, as pop-up menus). */
+- (int) _serverLevel: (nextbsd_window_t *)w;
+@end
+
+/* A NextBSD desktop setting (NextBSDServer.m): the user's value, else
+   the active theme's, else `builtin`. As nextbsd-theme's
+   NBDesktopSettings.h. */
+NSString *NextBSDDesktopSetting(NSString *key, NSArray *allowed,
+				NSString *builtin);
 
 #endif /* _NextBSDServer_h_INCLUDE */

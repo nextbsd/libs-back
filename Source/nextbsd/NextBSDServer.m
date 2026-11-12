@@ -69,8 +69,8 @@
  * (the key at the top of its Info.plist), else the built-in one. This is
  * the lookup in nextbsd-theme's NBDesktopSettings.h; keep them in step.
  */
-static NSString *
-desktopSetting(NSString *key, NSArray *allowed, NSString *builtin)
+NSString *
+NextBSDDesktopSetting(NSString *key, NSArray *allowed, NSString *builtin)
 {
   id value;
 
@@ -97,7 +97,7 @@ minimizeStyle(void)
 			    @"nextstep", @"previews", @"dock", nil];
   /* Pick up a change Workspace Preferences just saved. */
   [[NSUserDefaults standardUserDefaults] synchronize];
-  return desktopSetting(@"NBMinimizeStyle", styles, @"previews");
+  return NextBSDDesktopSetting(@"NBMinimizeStyle", styles, @"previews");
 }
 
 #ifdef WS_SERVER_MINIMIZE_WHERE
@@ -297,6 +297,10 @@ watchedModes(void)
 		 name: NSApplicationDidFinishLaunchingNotification
 	       object: nil];
     }
+  /* The NBMenuStyle desktop setting chooses libs-gui's menu style, and
+     changes it live (NextBSDServer+MenuStyle.m). */
+  reportedMenuBar = -1;
+  [self _setUpMenuStyle];
 
   [self setupCursors];
   /* ws_connect may have queued events while waiting for its welcome. */
@@ -334,6 +338,7 @@ watchedModes(void)
   nextbsd_window_t *w;
 
   [[NSNotificationCenter defaultCenter] removeObserver: self];
+  [self _tearDownMenuStyle];
   [previewTimer invalidate];
   previewTimer = nil;
   DESTROY(uploadedIcon);
@@ -769,6 +774,7 @@ watchedModes(void)
   w->number = (int)number;
   w->frame = frame;
   w->level = NSNormalWindowLevel;
+  w->serverLevel = NSNormalWindowLevel;
   w->type = type;
   NSMapInsert(windows, (void *)(intptr_t)w->number, w);
   [self _setWindowOwnedByServer: w->number];
@@ -934,6 +940,12 @@ watchedModes(void)
       return;
     }
   [self updateFlags: w];
+  /* A menu window shown again after the menu style changed. */
+  if (w->serverLevel != [self _serverLevel: w])
+    {
+      w->serverLevel = [self _serverLevel: w];
+      ws_window_set_level(conn, w->number, w->serverLevel);
+    }
   [self _keepMenuOnScreen: w];
   [self _stackPlace: w op: op relativeTo: otherWin];
   w->visible = YES;
@@ -942,6 +954,10 @@ watchedModes(void)
   ws_window_order(conn, w->number,
 		  op == NSWindowBelow ? WS_ORDER_BELOW : WS_ORDER_ABOVE,
 		  otherWin > 0 ? (uint32_t)otherWin : 0);
+  /* A main menu shown: the Mac menu bar's height, if it changed (an app
+     can make its main menu late, after it finished launching). */
+  if (w->level == NSMainMenuWindowLevel)
+    [self _reportMenuBar];
   [self _focusModalWindow: w];
 }
 
@@ -1062,13 +1078,21 @@ watchedModes(void)
   NSRect  sup, u;
 
   if (w->level == NSMainMenuWindowLevel)
-    return [self _frameOutOfDock: frame];
+    {
+      /* The Mac menu bar stays along the top: the menu bar strip, which
+	 the usable area leaves out and a top Dock sits below. */
+      if ([self _isMacMenuBar: w])
+	return frame;
+      return [self _frameOutOfDock: frame];
+    }
   if (![self _isMenuLevel: w->level] || NSIsEmptyRect(b))
     return frame;
   /* Submenus and torn-off menus are under the Dock too: keep them in
-     the usable area. Pop-up menus are above it. */
+     the usable area. Pop-up menus are above it, and so are the Mac menu
+     bar's menus (-_serverLevel:), which drop down over a top Dock. */
   u = [self visibleFrameForScreen: screen.screen_id];
-  if (w->level == NSSubmenuWindowLevel && !NSIsEmptyRect(u))
+  if (w->level == NSSubmenuWindowLevel && !NSIsEmptyRect(u)
+      && ![self _isMacBarMenu: w])
     b = u;
   if (NSWidth(frame) <= NSWidth(b))
     {
@@ -1178,8 +1202,10 @@ watchedModes(void)
   if (w->level != level)
     {
       w->level = level;
-      /* libs-gui levels are WindowServer levels. */
-      ws_window_set_level(conn, w->number, level);
+      /* libs-gui levels are WindowServer levels (but see
+	 -_serverLevel:). */
+      w->serverLevel = [self _serverLevel: w];
+      ws_window_set_level(conn, w->number, w->serverLevel);
       if (w->visible)
 	{
 	  [self _stackPlace: w op: NSWindowAbove relativeTo: 0];
