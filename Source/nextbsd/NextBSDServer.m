@@ -342,6 +342,10 @@ watchedModes(void)
     }
   if (w->ignoresMouse)
     flags |= WS_WINDOW_IGNORES_MOUSE;
+  /* App icons and miniwindows: WindowServer finds them a free place. */
+  if (nswin != nil
+      && ([nswin styleMask] & (NSIconWindowMask | NSMiniWindowMask)) != 0)
+    flags |= WS_WINDOW_ICON;
   if (flags != w->flags)
     {
       w->flags = flags;
