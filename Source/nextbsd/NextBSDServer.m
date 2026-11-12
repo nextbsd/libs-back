@@ -409,13 +409,12 @@ watchedModes(void)
   return NSMakeRect(0, 0, screen.width, screen.height);
 }
 
+/* libs-gui scales the whole UI by this resolution / 72 when GSScaleFactor
+   isn't set, so reporting the display's physical DPI made everything about
+   1.4 times too big. Report 72, as the X11 backend does (it keeps
+   GSDisplayServer's default); HiDPI scaling comes from GSScaleFactor. */
 - (NSSize) resolutionForScreen: (int)aScreen
 {
-  if (screen.mm_width > 0 && screen.mm_height > 0)
-    {
-      return NSMakeSize(screen.width * 25.4 / screen.mm_width,
-			screen.height * 25.4 / screen.mm_height);
-    }
   return NSMakeSize(72, 72);
 }
 
