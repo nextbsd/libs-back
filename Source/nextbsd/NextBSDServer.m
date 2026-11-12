@@ -480,7 +480,15 @@ watchedModes(void)
 {
   if (!serverActivating && conn != NULL)
     {
+#ifdef WS_ACTIVATE_RAISE
+      /* The app activates itself (it started, or another app asked it
+	 to, as Workspace and the Dock do): its windows come forward,
+	 those of connections that joined it too (XLibre's X server),
+	 which the app can't order itself. */
+      ws_activate_flags(conn, WS_ACTIVATE_RAISE);
+#else
       ws_activate(conn);
+#endif
     }
 }
 
