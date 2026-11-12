@@ -108,6 +108,16 @@ watchedModes(void)
   return conn;
 }
 
+- (NSDictionary *) windowServerAppCredentials
+{
+  if (conn == NULL)
+    return nil;
+  return [NSDictionary dictionaryWithObjectsAndKeys:
+    [NSNumber numberWithUnsignedInt: ws_client_id(conn)], @"ClientID",
+    [NSNumber numberWithUnsignedLongLong: ws_client_token(conn)], @"Token",
+    nil];
+}
+
 - (id) initWithAttributes: (NSDictionary *)info
 {
   NSString	 *name;
