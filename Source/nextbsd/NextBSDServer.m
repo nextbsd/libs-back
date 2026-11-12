@@ -64,6 +64,7 @@
 
 #include "nextbsd/NextBSDServer.h"
 #include "nextbsd/NextBSDCairoShmSurface.h"
+#include "nextbsd/NextBSDDragView.h"
 
 /*
  * A NextBSD desktop setting: the user's choice (the key in the user's
@@ -700,6 +701,13 @@ watchedModes(void)
       if ([[NSUserDefaults standardUserDefaults] boolForKey: @"NBNeverTile"])
 	flags |= WS_WINDOW_NO_TILE;
     }
+#ifdef WS_SERVER_DRAG
+  /* Drag and drop: some view of the window registered dragged types, so
+     WindowServer sends it the drags that pass over it. */
+  if (nswin != nil && (ws_server_flags(conn) & WS_SERVER_DRAG) != 0
+      && [[self dragTypesForWindow: nswin] count] > 0)
+    flags |= WS_WINDOW_ACCEPTS_DRAGS;
+#endif
   if (flags != w->flags)
     {
       w->flags = flags;
@@ -760,6 +768,41 @@ watchedModes(void)
 
 - (void) restrictWindow: (int)win toImage: (NSImage *)image
 {
+}
+
+/* ---- drag and drop (NextBSDDragView) ---- */
+
+- (id <NSDraggingInfo>) dragInfo
+{
+  return [NextBSDDragView sharedDragView];
+}
+
+/* A window that takes drags tells WindowServer (WS_WINDOW_ACCEPTS_DRAGS),
+   once it has a WindowServer window. */
+- (void) _dragTypesChanged: (NSWindow *)win
+{
+  nextbsd_window_t *w = [self windowWithNumber: [win windowNumber]];
+
+  if (w != NULL)
+    [self updateFlags: w];
+}
+
+- (BOOL) addDragTypes: (NSArray *)types toWindow: (NSWindow *)win
+{
+  BOOL changed = [super addDragTypes: types toWindow: win];
+
+  if (changed)
+    [self _dragTypesChanged: win];
+  return changed;
+}
+
+- (BOOL) removeDragTypes: (NSArray *)types fromWindow: (NSWindow *)win
+{
+  BOOL changed = [super removeDragTypes: types fromWindow: win];
+
+  if (changed)
+    [self _dragTypesChanged: win];
+  return changed;
 }
 
 - (NSRect) boundsForScreen: (int)aScreen
