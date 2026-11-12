@@ -50,6 +50,19 @@
  * NBMinimizeStyle is "dock" (WS_SERVER_MINIMIZE_WHERE; the bottom row
  * while no Dock is connected). With an older WindowServer the app
  * draws its miniwindows as before.
+ *
+ * The usable area (WS_SERVER_USABLE_AREA): WindowServer tells every app
+ * the screen minus the strip the Dock keeps on its edge, and the backend
+ * reports it as NSScreen's visibleFrame (-visibleFrameForScreen:), so
+ * libs-gui centres, cascades, constrains and zooms windows inside it,
+ * and places the NeXT main menu at its top-left: below a top Dock,
+ * right of a left one. The main menu, and submenus and torn-off menus,
+ * are also kept out of the Dock's strip wherever they're put, a saved
+ * NSMenuLocations position and a later Dock move included. Screen
+ * changes (WS_EVENT_SCREEN_CHANGED) move every window's GNUstep frame
+ * with the screen's height, reset NSScreen and post
+ * NSApplicationDidChangeScreenParametersNotification once the events
+ * that came with them are handled.
  */
 
 #ifndef _NextBSDServer_h_INCLUDE
@@ -105,6 +118,15 @@ typedef struct nextbsd_cursor
   BOOL			 cursorHidden;
   float			 scrollMultiplier;
   float			 scrollPixelsPerLine;
+  /* the usable area (WS_SERVER_USABLE_AREA), WindowServer coordinates */
+  ws_rect_t		 usable;
+  BOOL			 haveUsableArea;
+  /* NSApplicationDidChangeScreenParametersNotification is due once the
+     events read so far are handled; the screen's height changed by
+     pendingHeightDelta since the last one (see -_postScreenParameters) */
+  BOOL			 screenParamsPending;
+  CGFloat		 pendingHeightDelta;
+  CGFloat		 postingHeightDelta;
   /* minimizing (WS_SERVER_MINIMIZE) */
   BOOL			 serverMinimizes;
   NSImage		*uploadedIcon;	/* app icon WindowServer has */
@@ -146,6 +168,17 @@ typedef struct nextbsd_cursor
 
 /* Convert a GNUstep screen rect to a WindowServer rect and back. */
 - (void) setScreenInfo: (const ws_screen_info_t *)info;
+
+/* NSScreen's visibleFrame for the screen: the usable area WindowServer
+   reports, in GNUstep coordinates, or NSZeroRect from servers without
+   one (libs-gui's own answer then counts). */
+- (NSRect) visibleFrameForScreen: (int)aScreen;
+/* WS_EVENT_SCREEN_CHANGED and WS_EVENT_USABLE_AREA. */
+- (void) _screenChanged: (const ws_screen_info_t *)info;
+- (void) _usableAreaChanged: (ws_rect_t)area;
+/* Reset NSScreen and post NSApplicationDidChangeScreenParametersNotification. */
+- (void) _postScreenParameters;
+- (void) _notifyAllFrames;
 - (ws_rect_t) wsRectFromNSRect: (NSRect)r;
 - (NSRect) nsRectFromWSRect: (ws_rect_t)r;
 
@@ -170,6 +203,8 @@ typedef struct nextbsd_cursor
 - (NSRect) _supermenuFrame: (int)win;
 - (NSRect) _menuFrameOnScreen: (NSRect)frame window: (nextbsd_window_t *)w;
 - (void) _keepMenuOnScreen: (nextbsd_window_t *)w;
+/* The usable area changed: move menus out of the Dock's strip. */
+- (void) _keepMenusOutOfDock;
 @end
 
 @interface NextBSDServer (Events)

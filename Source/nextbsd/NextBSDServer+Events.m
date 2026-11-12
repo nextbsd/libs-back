@@ -456,8 +456,15 @@ utf8_string(const char *text, size_t size)
       break;
 
     case WS_EVENT_SCREEN_CHANGED:
-      [self setScreenInfo: &ev->u.screen];
+      [self _screenChanged: &ev->u.screen];
       break;
+
+#ifdef WS_SERVER_USABLE_AREA
+    case WS_EVENT_USABLE_AREA:
+      if (ev->u.usable_area.screen_id == screen.screen_id)
+	[self _usableAreaChanged: ev->u.usable_area.usable];
+      break;
+#endif
 
     case WS_EVENT_APP_ACTIVATED:
       /* WindowServer made us the active app (a click, or another app
@@ -513,7 +520,10 @@ utf8_string(const char *text, size_t size)
       if (w != NULL)
 	{
 	  w->frame = [self nsRectFromWSRect: ev->u.frame.frame];
-	  [self _notifyFrame: w post: YES];
+	  /* During a screen change the window hears it with the others,
+	     once the change's events are in (-_notifyAllFrames). */
+	  if (!screenParamsPending)
+	    [self _notifyFrame: w post: YES];
 	}
       break;
 
