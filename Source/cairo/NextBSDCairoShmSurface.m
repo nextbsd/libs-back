@@ -77,8 +77,14 @@ union_rect(BOOL have, NSRect a, NSRect b)
     height = 1;
 
   /* The back store GNUstep draws into. WindowServer wants premultiplied
-     native-endian ARGB, which is CAIRO_FORMAT_ARGB32. */
-  _surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, width, height);
+     native-endian ARGB, which is CAIRO_FORMAT_ARGB32. HiDPI: width and
+     height are points; the store has scale times the pixels, and
+     cairo's device scale makes GNUstep's drawing fill them. */
+  scale = [NextBSDServer backingScale];
+  _surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, width * scale,
+					height * scale);
+  if (cairo_surface_status(_surface) == CAIRO_STATUS_SUCCESS && scale != 1)
+    cairo_surface_set_device_scale(_surface, scale, scale);
   if (cairo_surface_status(_surface) != CAIRO_STATUS_SUCCESS)
     {
       NSLog(@"NextBSD: can't create a %dx%d surface for window %d",
@@ -162,7 +168,9 @@ union_rect(BOOL have, NSRect a, NSRect b)
     {
       if (buffers[i].buffer == NULL)
 	{
-	  buffers[i].buffer = ws_buffer_create(conn, width, height, 1);
+	  buffers[i].buffer = ws_buffer_create(conn,
+	    (uint32_t)(width * scale), (uint32_t)(height * scale),
+	    (uint32_t)scale);
 	  if (buffers[i].buffer == NULL)
 	    {
 	      NSLog(@"NextBSD: can't create a %dx%d buffer for window %d: %s",
@@ -197,6 +205,11 @@ union_rect(BOOL have, NSRect a, NSRect b)
   dstride = (int)ws_buffer_stride(b->buffer);
   if (src == NULL || dst == NULL)
     return;
+  /* points -> the store's pixels */
+  x0 *= scale;
+  y0 *= scale;
+  x1 *= scale;
+  y1 *= scale;
   for (y = y0; y < y1; y++)
     {
       memcpy(dst + (size_t)y * dstride + (size_t)x0 * 4,

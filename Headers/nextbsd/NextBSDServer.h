@@ -79,6 +79,20 @@
  * below the bar, keeps the bar at the top, and the bar's menus drop
  * down over a top Dock.
  *
+ * HiDPI (WindowServers with WS_SERVER_SCALE), as macOS does Retina:
+ * WindowServer lays the screen out in points and says how many backing
+ * pixels each point has (ws_screen_info_t.scale). GNUstep keeps working
+ * in points, the screen, window frames and events alike, so apps size
+ * and place everything as before; only the windows' cairo surfaces have
+ * scale times the pixels, with cairo's device scale set to it, and the
+ * buffers say so (ws_buffer_create's scale), so text, lines and images
+ * are drawn sharp. -[NSScreen backingScaleFactor] and -[NSWindow
+ * backingScaleFactor] answer the scale. An app keeps the scale it
+ * started with; when the user picks a size with another scale,
+ * WindowServer scales its windows until it's started again. The
+ * NBBackingScale default (or NB_BACKING_SCALE in the environment) sets
+ * another scale, 1 to draw at 1x and leave the scaling to WindowServer.
+ *
  * Cursors: on servers with WS_SERVER_WINDOW_CURSOR, -setcursor: gives
  * the cursor to the window the pointer is over (the window of the mouse
  * event libs-gui is handling), so WindowServer shows each window's own
@@ -178,11 +192,18 @@ typedef struct nextbsd_cursor
   /* tiled windows' saved frames from before tiling, by window number
      (NextBSDServer+TiledFrames.m) */
   NSMutableDictionary	*tiledFrames;
+  /* HiDPI: backing pixels per point, fixed when the app connects */
+  int			 backingScale;
 }
 
 /* The connection, for the cairo surfaces. */
 + (ws_connection_t *) connection;
 - (ws_connection_t *) connection;
+
+/* HiDPI: backing pixels per point (1 on servers without
+   WS_SERVER_SCALE), for the surfaces, the drag image and the icon. */
++ (int) backingScale;
+- (int) backingScale;
 
 /*
  * This app's WindowServer credentials, for a helper process that should
