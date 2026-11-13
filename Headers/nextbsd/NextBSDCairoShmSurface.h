@@ -56,8 +56,9 @@ struct nextbsd_buffer
 @interface NextBSDCairoShmSurface : CairoSurface
 {
   int			 window;	/* window number */
-  int			 width;
+  int			 width;		/* points */
   int			 height;
+  int			 scale;		/* HiDPI: pixels per point */
   struct nextbsd_buffer	 buffers[NEXTBSD_SURFACE_BUFFERS];
   BOOL			 hasDamage;
   NSRect		 damage;	/* not yet committed */

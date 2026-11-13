@@ -315,9 +315,14 @@ appendBezierToCairo(cairo_t *ct, NSBezierPath *bpath)
   if (_surface != nil)
     {
       NSSize size = [_surface size];
+      double sx = 1, sy = 1;
 
-      cairo_surface_set_device_offset([_surface surface], -theOffset.x, 
-                                      theOffset.y - size.height);
+      /* The offset is in device pixels: on a surface with a device
+         scale (the NextBSD backend's HiDPI windows) that many per
+         point. */
+      cairo_surface_get_device_scale([_surface surface], &sx, &sy);
+      cairo_surface_set_device_offset([_surface surface], -theOffset.x * sx,
+                                      (theOffset.y - size.height) * sy);
     }
   [super setOffset: theOffset];
 }

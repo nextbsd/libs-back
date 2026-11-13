@@ -116,12 +116,17 @@ ns_ops(uint32_t ops)
   ws_buffer_t	    *b;
   unsigned char	    *p;
   uint32_t	    *px, stride;
+  int		     s = [NextBSDServer backingScale];
   int		     w = (int)ceil(size.width), h = (int)ceil(size.height);
   int		     x, y;
 
   if (image == nil || w <= 0 || h <= 0 || w > WS_MAX_DRAG_IMAGE
       || h > WS_MAX_DRAG_IMAGE)
     return NULL;
+  /* HiDPI: drawn at the backing scale, sharp; the hot spot stays in
+     points */
+  w *= s;
+  h *= s;
   rep = [[NSBitmapImageRep alloc] initWithBitmapDataPlanes: NULL
 						 pixelsWide: w
 						 pixelsHigh: h
@@ -158,7 +163,7 @@ ns_ops(uint32_t ops)
   NS_ENDHANDLER
   [NSGraphicsContext setCurrentContext: old];
 
-  b = ws_buffer_create(conn, (uint32_t)w, (uint32_t)h, 1);
+  b = ws_buffer_create(conn, (uint32_t)w, (uint32_t)h, (uint32_t)s);
   if (b != NULL)
     {
       /* The bitmap is RGBA, premultiplied, top row first. */

@@ -227,6 +227,11 @@ wrapVisibleFrame(void)
 
 /* The connection, shared with the cairo surfaces. */
 static ws_connection_t *sharedConnection = NULL;
+static int sharedBackingScale = 1;
+
+#ifndef WS_SERVER_SCALE
+#define WS_SERVER_SCALE 0x10000000	/* older WindowServer headers */
+#endif
 
 static void
 event_handler(ws_connection_t *c, const ws_event_t *event, void *context)
@@ -273,6 +278,16 @@ watchedModes(void)
 + (ws_connection_t *) connection
 {
   return sharedConnection;
+}
+
++ (int) backingScale
+{
+  return sharedBackingScale > 0 ? sharedBackingScale : 1;
+}
+
+- (int) backingScale
+{
+  return backingScale > 0 ? backingScale : 1;
 }
 
 - (ws_connection_t *) connection
@@ -362,6 +377,24 @@ watchedModes(void)
     }
   sharedConnection = conn;
   screen = *ws_main_screen(conn);
+  /* HiDPI: the screen's scale, unless NB_BACKING_SCALE or the
+     NBBackingScale default says otherwise. */
+  backingScale = 1;
+  if ((ws_server_flags(conn) & WS_SERVER_SCALE) && screen.scale >= 1
+      && screen.scale <= 4)
+    backingScale = (int)screen.scale;
+  {
+    NSString   *force = [[NSUserDefaults standardUserDefaults]
+			  stringForKey: @"NBBackingScale"];
+    const char *env = getenv("NB_BACKING_SCALE");
+
+    if (env != NULL && atoi(env) >= 1 && atoi(env) <= 4)
+      backingScale = atoi(env);
+    else if (force != nil && [force intValue] >= 1
+	     && [force intValue] <= 4)
+      backingScale = [force intValue];
+  }
+  sharedBackingScale = backingScale;
 #ifdef WS_SERVER_USABLE_AREA
   /* The screen minus the Dock's strip, as NSScreen's visibleFrame. */
   haveUsableArea = ws_usable_area(conn, &usable) == 0;
@@ -1724,7 +1757,8 @@ sizeLimit(CGFloat v)
    into a bitmap (CairoBitmapSurface). */
 - (void) _uploadAppIcon: (NSImage *)icon
 {
-  const int	     size = 64;
+  /* HiDPI: at the backing scale, so the tiles' badge is sharp */
+  const int	     size = 64 * [self backingScale];
   NSBitmapImageRep  *rep;
   NSGraphicsContext *ctx;
   NSGraphicsContext *old;
@@ -1879,3 +1913,24 @@ sizeLimit(CGFloat v)
 }
 
 @end
+
+/*
+ * HiDPI: libs-gui answers 1.0 for the backing scale factor; on this
+ * backend windows have the screen's backing scale (NextBSDServer.h).
+ */
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wobjc-protocol-method-implementation"
+@implementation NSScreen (NextBSDBackingScale)
+- (CGFloat) backingScaleFactor
+{
+  return (CGFloat)[NextBSDServer backingScale];
+}
+@end
+
+@implementation NSWindow (NextBSDBackingScale)
+- (CGFloat) backingScaleFactor
+{
+  return (CGFloat)[NextBSDServer backingScale];
+}
+@end
+#pragma clang diagnostic pop
