@@ -35,14 +35,28 @@
 #include <WindowServer/WSClient.h>
 
 #define NEXTBSD_SURFACE_BUFFERS 2
+/* As many as WindowServer takes in one damage message. */
+#define NEXTBSD_RECTS 16
+
+/*
+ * A few rectangles (points, top-left origin), kept apart rather than
+ * merged into their bounding box: a window whose small changes are far
+ * apart (a clock and a cursor, a few moving sprites) then copies and
+ * uploads only those, not everything between them. Overlapping ones
+ * merge; past NEXTBSD_RECTS, a new one joins whichever grows least.
+ */
+struct nextbsd_rects
+{
+  int		 count;
+  NSRect	 rect[NEXTBSD_RECTS];
+};
 
 /* One WindowServer buffer of a surface. */
 struct nextbsd_buffer
 {
   ws_buffer_t	*buffer;
   BOOL		 busy;		/* attached; waiting for buffer-release */
-  BOOL		 hasStale;
-  NSRect	 stale;		/* parts older than the back store */
+  struct nextbsd_rects stale;	/* parts older than the back store */
 };
 
 /*
@@ -60,8 +74,7 @@ struct nextbsd_buffer
   int			 height;
   int			 scale;		/* HiDPI: pixels per point */
   struct nextbsd_buffer	 buffers[NEXTBSD_SURFACE_BUFFERS];
-  BOOL			 hasDamage;
-  NSRect		 damage;	/* not yet committed */
+  struct nextbsd_rects	 damage;	/* not yet committed */
   BOOL			 framePending;
 }
 
