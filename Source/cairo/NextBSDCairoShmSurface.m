@@ -55,10 +55,47 @@ pixel_rect(NSRect r, int width, int height, int *x0, int *y0, int *x1, int *y1)
   return (*x1 > *x0 && *y1 > *y0);
 }
 
-static NSRect
-union_rect(BOOL have, NSRect a, NSRect b)
+/* Add r to the set, merging what overlaps (NextBSDCairoShmSurface.h). */
+static void
+rects_add(struct nextbsd_rects *s, NSRect r)
 {
-  return have ? NSUnionRect(a, b) : b;
+  int i, best = 0;
+  double grow, least = -1;
+
+  if (NSIsEmptyRect(r))
+    return;
+  for (i = 0; i < s->count; )
+    {
+      /* touching counts: two strips side by side are one copy */
+      if (NSIntersectsRect(NSInsetRect(s->rect[i], -1, -1), r))
+	{
+	  r = NSUnionRect(r, s->rect[i]);
+	  s->rect[i] = s->rect[--s->count];
+	  i = 0;	/* r grew: it may meet one already passed */
+	}
+      else
+	i++;
+    }
+  if (s->count < NEXTBSD_RECTS)
+    {
+      s->rect[s->count++] = r;
+      return;
+    }
+  for (i = 0; i < s->count; i++)
+    {
+      NSRect u = NSUnionRect(s->rect[i], r);
+
+      grow = NSWidth(u) * NSHeight(u)
+	- NSWidth(s->rect[i]) * NSHeight(s->rect[i]);
+      if (least < 0 || grow < least)
+	{
+	  least = grow;
+	  best = i;
+	}
+    }
+  r = NSUnionRect(s->rect[best], r);
+  s->rect[best] = s->rect[--s->count];
+  rects_add(s, r);
 }
 
 @implementation NextBSDCairoShmSurface
@@ -138,7 +175,7 @@ union_rect(BOOL have, NSRect a, NSRect b)
 {
   [self destroyBuffers];
   window = 0;
-  hasDamage = NO;
+  damage.count = 0;
 }
 
 - (NSSize) size
@@ -178,8 +215,8 @@ union_rect(BOOL have, NSRect a, NSRect b)
 	      return NULL;
 	    }
 	  buffers[i].busy = NO;
-	  buffers[i].hasStale = YES;
-	  buffers[i].stale = NSMakeRect(0, 0, width, height);
+	  buffers[i].stale.count = 0;
+	  rects_add(&buffers[i].stale, NSMakeRect(0, 0, width, height));
 	  return &buffers[i];
 	}
     }
@@ -191,31 +228,32 @@ union_rect(BOOL have, NSRect a, NSRect b)
 {
   const uint8_t *src;
   uint8_t	*dst;
-  int		 sstride, dstride, x0, y0, x1, y1, y;
+  int		 sstride, dstride, x0, y0, x1, y1, y, i;
 
-  if (!b->hasStale)
-    return;
-  b->hasStale = NO;
-  if (!pixel_rect(b->stale, width, height, &x0, &y0, &x1, &y1))
+  if (b->stale.count == 0)
     return;
   cairo_surface_flush(_surface);
   src = cairo_image_surface_get_data(_surface);
   sstride = cairo_image_surface_get_stride(_surface);
   dst = ws_buffer_data(b->buffer);
   dstride = (int)ws_buffer_stride(b->buffer);
-  if (src == NULL || dst == NULL)
-    return;
-  /* points -> the store's pixels */
-  x0 *= scale;
-  y0 *= scale;
-  x1 *= scale;
-  y1 *= scale;
-  for (y = y0; y < y1; y++)
+  for (i = 0; src != NULL && dst != NULL && i < b->stale.count; i++)
     {
-      memcpy(dst + (size_t)y * dstride + (size_t)x0 * 4,
-	     src + (size_t)y * sstride + (size_t)x0 * 4,
-	     (size_t)(x1 - x0) * 4);
+      if (!pixel_rect(b->stale.rect[i], width, height, &x0, &y0, &x1, &y1))
+	continue;
+      /* points -> the store's pixels */
+      x0 *= scale;
+      y0 *= scale;
+      x1 *= scale;
+      y1 *= scale;
+      for (y = y0; y < y1; y++)
+	{
+	  memcpy(dst + (size_t)y * dstride + (size_t)x0 * 4,
+		 src + (size_t)y * sstride + (size_t)x0 * 4,
+		 (size_t)(x1 - x0) * 4);
+	}
     }
+  b->stale.count = 0;
 }
 
 /* An OpenGL context presents the window (NextBSDOpenGL.h). */
@@ -231,10 +269,11 @@ union_rect(BOOL have, NSRect a, NSRect b)
 {
   ws_connection_t	*conn = [NextBSDServer connection];
   struct nextbsd_buffer *b;
-  ws_rect_t		 r;
-  int			 x0, y0, x1, y1;
+  ws_rect_t		 r[NEXTBSD_RECTS];
+  int			 x0, y0, x1, y1, i, n = 0;
 
-  if (!hasDamage || window == 0 || conn == NULL || [self glPresents])
+  if (damage.count == 0 || window == 0 || conn == NULL
+      || [self glPresents])
     return;
   b = [self freeBuffer];
   if (b == NULL)
@@ -243,15 +282,21 @@ union_rect(BOOL have, NSRect a, NSRect b)
       return;
     }
   [self updateBuffer: b];
-  hasDamage = NO;
-  if (!pixel_rect(damage, width, height, &x0, &y0, &x1, &y1))
+  for (i = 0; i < damage.count; i++)
+    {
+      if (!pixel_rect(damage.rect[i], width, height, &x0, &y0, &x1, &y1))
+	continue;
+      r[n].x = x0;
+      r[n].y = y0;
+      r[n].width = x1 - x0;
+      r[n].height = y1 - y0;
+      n++;
+    }
+  damage.count = 0;
+  if (n == 0)
     return;
-  r.x = x0;
-  r.y = y0;
-  r.width = x1 - x0;
-  r.height = y1 - y0;
   ws_window_attach(conn, window, b->buffer);
-  ws_window_damage(conn, window, &r, 1);
+  ws_window_damage(conn, window, r, (unsigned)n);
   ws_window_commit(conn, window, WS_COMMIT_FRAME_DONE);
   b->busy = YES;
   framePending = YES;
@@ -267,14 +312,9 @@ union_rect(BOOL have, NSRect a, NSRect b)
   for (i = 0; i < NEXTBSD_SURFACE_BUFFERS; i++)
     {
       if (buffers[i].buffer != NULL)
-	{
-	  buffers[i].stale = union_rect(buffers[i].hasStale,
-					buffers[i].stale, rect);
-	  buffers[i].hasStale = YES;
-	}
+	rects_add(&buffers[i].stale, rect);
     }
-  damage = union_rect(hasDamage, damage, rect);
-  hasDamage = YES;
+  rects_add(&damage, rect);
   [self commit];
 }
 
