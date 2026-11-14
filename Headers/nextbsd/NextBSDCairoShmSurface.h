@@ -70,6 +70,10 @@ struct nextbsd_buffer
 - (void) frameDone;
 /* The window is gone: drop the WindowServer buffers. */
 - (void) detach;
+/* An OpenGL context presents the window (its glOwner): stop committing
+   and give the buffers back; then draw it all again when it stops. */
+- (void) suspendForGL;
+- (void) resumeAfterGL;
 @end
 
 #endif

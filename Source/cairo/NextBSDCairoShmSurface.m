@@ -218,6 +218,14 @@ union_rect(BOOL have, NSRect a, NSRect b)
     }
 }
 
+/* An OpenGL context presents the window (NextBSDOpenGL.h). */
+- (BOOL) glPresents
+{
+  nextbsd_window_t *win = (nextbsd_window_t *)gsDevice;
+
+  return window != 0 && win != NULL && win->glOwner != nil;
+}
+
 /* Attach a free buffer and commit the damage, if a buffer is free. */
 - (void) commit
 {
@@ -226,7 +234,7 @@ union_rect(BOOL have, NSRect a, NSRect b)
   ws_rect_t		 r;
   int			 x0, y0, x1, y1;
 
-  if (!hasDamage || window == 0 || conn == NULL)
+  if (!hasDamage || window == 0 || conn == NULL || [self glPresents])
     return;
   b = [self freeBuffer];
   if (b == NULL)
@@ -289,7 +297,8 @@ union_rect(BOOL have, NSRect a, NSRect b)
 
 - (BOOL) bufferReleased: (uint32_t)bufferId
 {
-  int i;
+  ws_connection_t *conn = [NextBSDServer connection];
+  int		   i;
 
   for (i = 0; i < NEXTBSD_SURFACE_BUFFERS; i++)
     {
@@ -297,11 +306,38 @@ union_rect(BOOL have, NSRect a, NSRect b)
 	  && ws_buffer_id(buffers[i].buffer) == bufferId)
 	{
 	  buffers[i].busy = NO;
+	  if ([self glPresents] && conn != NULL)
+	    {
+	      /* Not needed while OpenGL presents the window. */
+	      ws_buffer_destroy(conn, buffers[i].buffer);
+	      buffers[i].buffer = NULL;
+	    }
 	  [self commit];
 	  return YES;
 	}
     }
   return NO;
+}
+
+- (void) suspendForGL
+{
+  ws_connection_t *conn = [NextBSDServer connection];
+  int		   i;
+
+  /* The one WindowServer holds goes when it comes back. */
+  for (i = 0; i < NEXTBSD_SURFACE_BUFFERS; i++)
+    {
+      if (buffers[i].buffer != NULL && !buffers[i].busy && conn != NULL)
+	{
+	  ws_buffer_destroy(conn, buffers[i].buffer);
+	  buffers[i].buffer = NULL;
+	}
+    }
+}
+
+- (void) resumeAfterGL
+{
+  [self handleExposeRect: NSMakeRect(0, 0, width, height)];
 }
 
 - (void) frameDone

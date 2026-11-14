@@ -28,3 +28,7 @@ ADDITIONAL_CPPFLAGS += -Wall $(CONFIG_SYSTEM_DEFS)
 # GRAPHIC_CFLAGS carries the WindowServerClient flags from pkgconf.
 ADDITIONAL_INCLUDE_DIRS += -I../../Headers \
 	-I../$(GNUSTEP_TARGET_DIR) $(GRAPHIC_CFLAGS)
+
+# OpenGL (NextBSDOpenGL.h) builds when the EGL and GBM headers are there;
+# the libraries are loaded at run time, so nothing is linked.
+ADDITIONAL_INCLUDE_DIRS += $(shell pkg-config --cflags-only-I egl gbm 2>/dev/null)

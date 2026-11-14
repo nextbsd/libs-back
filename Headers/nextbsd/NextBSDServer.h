@@ -115,6 +115,11 @@
  * backend gives the menu tracking loop a click there, which closes the
  * menu the way a click on one of the app's own windows does. Older
  * servers leave such a menu open until the app gets a click.
+ *
+ * OpenGL (WindowServers with GPU buffers, WS_SERVER_DMABUF): NSOpenGLContext
+ * draws on the GPU into buffers WindowServer composites without a copy;
+ * a context whose view covers its window presents the window itself.
+ * See NextBSDOpenGL.h.
  */
 
 #ifndef _NextBSDServer_h_INCLUDE
@@ -148,6 +153,9 @@ typedef struct nextbsd_window
   NextBSDCairoShmSurface *surface; /* current surface, not retained */
   struct nextbsd_cursor *cursor; /* the window's cursor WindowServer has
 				   (WS_SERVER_WINDOW_CURSOR), NULL unknown */
+  id		 glOwner;	/* the NSOpenGLContext whose frames are the
+				   window's buffers (NextBSDOpenGL.h), not
+				   retained; the surface doesn't commit */
 } nextbsd_window_t;
 
 /* Cursor handles given to libs-gui (the cid of the cursor methods). */

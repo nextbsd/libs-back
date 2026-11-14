@@ -38,6 +38,7 @@
 #include <string.h>
 
 #include "nextbsd/NextBSDServer.h"
+#include "nextbsd/NextBSDOpenGL.h"
 #include "nextbsd/NextBSDCairoShmSurface.h"
 #include "nextbsd/NextBSDDragView.h"
 
@@ -643,14 +644,23 @@ utf8_string(const char *text, size_t size)
 
     case WS_EVENT_BUFFER_RELEASE:
       w = [self windowWithNumber: ev->hdr.window];
-      if (w != NULL && w->surface != nil)
-	[w->surface bufferReleased: ev->u.buffer.buffer_id];
+      if (w != NULL && w->surface != nil
+	  && [w->surface bufferReleased: ev->u.buffer.buffer_id])
+	break;
+#ifdef NEXTBSD_HAVE_GL
+      /* An OpenGL context's buffer, maybe of a window it no longer
+	 presents. */
+      [NextBSDGLContext bufferReleased: ev->u.buffer.buffer_id];
+#endif
       break;
 
     case WS_EVENT_FRAME_DONE:
       w = [self windowWithNumber: ev->hdr.window];
       if (w != NULL && w->surface != nil)
 	[w->surface frameDone];
+#ifdef NEXTBSD_HAVE_GL
+      [NextBSDGLContext frameDoneForWindow: (int)ev->hdr.window];
+#endif
       break;
 
     case WS_EVENT_MOUSE_DOWN:

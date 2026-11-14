@@ -65,6 +65,7 @@
 #include "nextbsd/NextBSDServer.h"
 #include "nextbsd/NextBSDCairoShmSurface.h"
 #include "nextbsd/NextBSDDragView.h"
+#include "nextbsd/NextBSDOpenGL.h"
 
 /*
  * A NextBSD desktop setting: the user's choice (the key in the user's
@@ -999,6 +1000,27 @@ watchedModes(void)
   NSDebugLLog(@"NextBSD", @"beep");
 }
 
+/* OpenGL, on servers with GPU buffers (NextBSDOpenGL.h). nil makes
+   NSOpenGLPixelFormat and NSOpenGLContext allocate nil, so apps keep
+   their CPU paths. */
+- glContextClass
+{
+#ifdef NEXTBSD_HAVE_GL
+  if ([NextBSDGLContext isAvailable])
+    return [NextBSDGLContext class];
+#endif
+  return nil;
+}
+
+- glPixelFormatClass
+{
+#ifdef NEXTBSD_HAVE_GL
+  if ([NextBSDGLContext isAvailable])
+    return [NextBSDGLPixelFormat class];
+#endif
+  return nil;
+}
+
 @end
 
 /* ----------------------------------------------------------------------- */
@@ -1045,6 +1067,10 @@ watchedModes(void)
 
   if (w == NULL)
     return;
+#ifdef NEXTBSD_HAVE_GL
+  [NextBSDGLContext windowWillClose: win];
+  w->glOwner = nil;
+#endif
   [w->surface detach];
   w->surface = nil;
   ws_window_destroy(conn, w->number);
