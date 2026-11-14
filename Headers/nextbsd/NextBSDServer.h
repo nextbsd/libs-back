@@ -99,6 +99,15 @@
  * cursor the moment the pointer enters it, without waiting for the app.
  * Older servers get the connection's cursor, as before.
  *
+ * Opaque windows (nextbsd/libs-back#32): a window whose NSWindow is
+ * opaque (-isOpaque, YES unless the app said otherwise) with an alpha
+ * value of 1, and that isn't shaped (-restrictWindow:toImage:), is
+ * WS_WINDOW_OPAQUE, so WindowServer copies it to the screen rather than
+ * blending it, and what's behind it needn't be drawn. Its buffer stays
+ * ARGB; WindowServer ignores the alpha. Other windows are blended.
+ * -setalpha:: and -restrictWindow:toImage: update the flag; libs-gui
+ * doesn't tell the backend about -setOpaque:, so a flush notices it.
+ *
  * Menus and pop-ups (WS_SERVER_POINTER_GRAB): while a pop-up or context
  * menu is open, or a menu of the Mac menu bar or of a window's menu, the
  * backend holds a WS_GRAB_OUTSIDE pointer grab. The first press outside
@@ -132,6 +141,7 @@ typedef struct nextbsd_window
   BOOL		 ignoresMouse;
   BOOL		 miniaturized;
   BOOL		 tiled;		/* minimized to a WindowServer tile */
+  BOOL		 shaped;	/* -restrictWindow:toImage: gave a shape */
   NSSize	 minSize;	/* -setminsize::, -setmaxsize:: (window */
   NSSize	 maxSize;	/* tiling, WS_SERVER_TILING) */
   NSBackingStoreType type;

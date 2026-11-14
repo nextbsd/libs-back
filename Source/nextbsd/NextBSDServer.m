@@ -694,6 +694,18 @@ watchedModes(void)
 		    r.width, r.height);
 }
 
+/* An opaque window: WindowServer can ignore its alpha (WS_WINDOW_OPAQUE)
+   and copy it to the screen instead of blending it. Not a window the
+   app made transparent or translucent, or a shaped one (a drag or slide
+   image), which has transparent pixels outside its shape. */
+- (BOOL) _windowIsOpaque: (nextbsd_window_t *)w
+{
+  NSWindow *nswin = GSWindowWithNumber(w->number);
+
+  return (nswin != nil && !w->shaped && [nswin isOpaque]
+	  && [nswin alphaValue] >= 1.0);
+}
+
 /* WindowServer flags for a window, from what libs-gui knows about it. */
 - (void) updateFlags: (nextbsd_window_t *)w
 {
@@ -741,6 +753,8 @@ watchedModes(void)
       && [[self dragTypesForWindow: nswin] count] > 0)
     flags |= WS_WINDOW_ACCEPTS_DRAGS;
 #endif
+  if ([self _windowIsOpaque: w])
+    flags |= WS_WINDOW_OPAQUE;
   if (flags != w->flags)
     {
       w->flags = flags;
@@ -810,8 +824,16 @@ watchedModes(void)
   return NO;
 }
 
+/* No shapes, but a shaped window (GSDragView's, GSSlideView's) has
+   transparent pixels around its image, so it's blended. */
 - (void) restrictWindow: (int)win toImage: (NSImage *)image
 {
+  nextbsd_window_t *w = [self windowWithNumber: win];
+
+  if (w == NULL)
+    return;
+  w->shaped = (image != nil);
+  [self updateFlags: w];
 }
 
 /* ---- drag and drop (NextBSDDragView) ---- */
@@ -1702,6 +1724,12 @@ sizeLimit(CGFloat v)
 
   if (w == NULL || w->surface == nil)
     return;
+  /* -[NSWindow setOpaque:] doesn't reach the backend: a window made
+     opaque or not since it was ordered in changes its flag before the
+     pixels that need it are committed. */
+  if (w->visible
+      && ((w->flags & WS_WINDOW_OPAQUE) != 0) != [self _windowIsOpaque: w])
+    [self updateFlags: w];
   /* Window base coordinates -> top-left window pixels. */
   r.origin.x = NSMinX(rect);
   r.origin.y = NSHeight(w->frame) - NSMaxY(rect);
@@ -1725,8 +1753,14 @@ sizeLimit(CGFloat v)
   /* libs-gui draws the title bar state itself. */
 }
 
+/* WindowServer doesn't fade windows, but one with an alpha value below 1
+   isn't opaque. */
 - (void) setalpha: (float)alpha : (int)win
 {
+  nextbsd_window_t *w = [self windowWithNumber: win];
+
+  if (w != NULL)
+    [self updateFlags: w];
 }
 
 - (void) setShadow: (BOOL)hasShadow : (int)win
