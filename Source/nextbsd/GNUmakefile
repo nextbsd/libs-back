@@ -37,6 +37,8 @@ NextBSDServer+Cursor.m \
 NextBSDServer+MenuStyle.m \
 NextBSDServer+TiledFrames.m \
 NextBSDDragView.m \
+NextBSDGLContext.m \
+NextBSDGLPixelFormat.m \
 
 -include GNUmakefile.preamble
 
