@@ -251,9 +251,10 @@ utf8_string(const char *text, size_t size)
   float			    dx, dy;
   int			    button = p->button;
 
-  dx = (pointerScreen.x >= 0) ? p->screen_x - pointerScreen.x : 0;
-  dy = (pointerScreen.y >= 0) ? p->screen_y - pointerScreen.y : 0;
+  dx = pointerKnown ? p->screen_x - pointerScreen.x : 0;
+  dy = pointerKnown ? p->screen_y - pointerScreen.y : 0;
   pointerScreen = NSMakePoint(p->screen_x, p->screen_y);
+  pointerKnown = YES;
   if (w == NULL)
     return;
   pointerWindow = w->number;
@@ -364,6 +365,7 @@ utf8_string(const char *text, size_t size)
 
   [self _popupGrabEnded];
   pointerScreen = NSMakePoint(p->screen_x, p->screen_y);
+  pointerKnown = YES;
   pointerWindow = 0;
   w = [self _topPopupMenu];
   if (w == NULL || ![[[NSRunLoop currentRunLoop] currentMode]
@@ -547,6 +549,12 @@ utf8_string(const char *text, size_t size)
       [self _screenChanged: &ev->u.screen];
       break;
 
+#ifdef WS_SERVER_DISPLAYS
+    case WS_EVENT_DISPLAYS_CHANGED:
+      [self _displaysChanged];
+      break;
+#endif
+
 #ifdef WS_SERVER_USABLE_AREA
     case WS_EVENT_USABLE_AREA:
       if (ev->u.usable_area.screen_id == screen.screen_id)
@@ -725,7 +733,7 @@ utf8_string(const char *text, size_t size)
 {
   if (win != NULL)
     *win = pointerWindow;
-  if (pointerScreen.x < 0)
+  if (!pointerKnown)
     return NSMakePoint(-1, -1);
   return NSMakePoint(pointerScreen.x, [self screenHeight] - pointerScreen.y);
 }
