@@ -154,6 +154,7 @@
 @class NSImage;
 @class NSMutableDictionary;
 @class NSTimer;
+@class NSWindow;
 
 /* One GNUstep window, as the backend sees it. */
 typedef struct nextbsd_window
@@ -174,6 +175,8 @@ typedef struct nextbsd_window
   NextBSDCairoShmSurface *surface; /* current surface, not retained */
   struct nextbsd_cursor *cursor; /* the window's cursor WindowServer has
 				   (WS_SERVER_WINDOW_CURSOR), NULL unknown */
+  int		 statusWidth;	/* a status item this wide WindowServer
+				   has (WS_MSG_STATUS_ITEM), 0 none */
   id		 glOwner;	/* the NSOpenGLContext whose frames are the
 				   window's buffers (NextBSDOpenGL.h), not
 				   retained; the surface doesn't commit */
@@ -233,9 +236,13 @@ typedef struct nextbsd_cursor
   NSTimer		*previewTimer;	/* not retained; the run loop has it */
   /* the menu style (NextBSDServer+MenuStyle.m) */
   int			 reportedMenuBar; /* WS_MSG_SET_MENU_BAR sent, -1 none */
+  int			 reportedMenuBarWindow; /* and the bar window it named */
   BOOL			 launched;	/* NSApplicationWillFinishLaunching */
   NSArray		*tornOffMenus;	/* to show again back in NeXT style */
   NSArray		*nextMenuOrder;	/* the main menu's items in NeXT style */
+  /* status items (NextBSDStatusBar.m): NSWindow -> width in points */
+  NSMapTable		*statusItemWidths;
+  BOOL			 statusItemPress; /* the last press was on one */
   /* tiled windows' saved frames from before tiling, by window number
      (NextBSDServer+TiledFrames.m) */
   NSMutableDictionary	*tiledFrames;
@@ -389,6 +396,20 @@ typedef struct nextbsd_cursor
 /* The level WindowServer stacks the window at: libs-gui's, except for
    the Mac menu bar's menus (above the Dock, as pop-up menus). */
 - (int) _serverLevel: (nextbsd_window_t *)w;
+@end
+
+@interface NextBSDServer (StatusItems)
+/* At startup (-initWithAttributes:) and when the server goes away. */
+- (void) _setUpStatusItems;
+- (void) _tearDownStatusItems;
+/* Make the window a status item `width` points wide, or with 0 an
+   ordinary window again (NextBSDStatusBar.m). */
+- (void) _setStatusItemWindow: (NSWindow *)win width: (CGFloat)width;
+- (BOOL) _isStatusItem: (nextbsd_window_t *)w;
+/* Tell WindowServer, if the window is made and its width changed. */
+- (void) _sendStatusItem: (nextbsd_window_t *)w;
+/* Close a status item's menu that a click outside the app left open. */
+- (void) _closeStatusItemMenus;
 @end
 
 @interface NextBSDServer (TiledFrames)

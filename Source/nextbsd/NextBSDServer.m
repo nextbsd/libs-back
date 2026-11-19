@@ -472,6 +472,9 @@ watchedModes(void)
      changes it live (NextBSDServer+MenuStyle.m). */
   reportedMenuBar = -1;
   [self _setUpMenuStyle];
+  /* NSStatusBar's items at the menu bar's right end
+     (NextBSDStatusBar.m). */
+  [self _setUpStatusItems];
   /* Tiles aren't saved as the windows' frames. */
   [self _setUpTiledFrames];
 
@@ -512,6 +515,7 @@ watchedModes(void)
 
   [[NSNotificationCenter defaultCenter] removeObserver: self];
   [self _tearDownMenuStyle];
+  [self _tearDownStatusItems];
   [previewTimer invalidate];
   previewTimer = nil;
   DESTROY(uploadedIcon);
@@ -809,6 +813,12 @@ windowScreen(NSWindow *win)
     {
       flags |= WS_WINDOW_NO_KEY;
     }
+  /* A status item's menu, open while the app isn't active: choosing from
+     it leaves the active app and its menu bar as they are, as the press
+     on the item did (NextBSDStatusBar.m). */
+  if (statusItemWidths != NULL && ![NSApp isActive]
+      && menuPanelClass != Nil && [nswin isKindOfClass: menuPanelClass])
+    flags |= WS_WINDOW_NO_ACTIVATE;
   if (w->ignoresMouse)
     flags |= WS_WINDOW_IGNORES_MOUSE;
   /* App icons and miniwindows: WindowServer finds them a free place. */
@@ -1485,6 +1495,8 @@ add_display(const ws_display_info_t *display, void *ctx)
       ws_window_set_level(conn, w->number, w->serverLevel);
     }
   [self _keepMenuOnScreen: w];
+  /* A status item takes its place before it's seen. */
+  [self _sendStatusItem: w];
   [self _stackPlace: w op: op relativeTo: otherWin];
   w->visible = YES;
   w->miniaturized = NO;
@@ -1770,8 +1782,10 @@ add_display(const ws_display_info_t *display, void *ctx)
   if (want)
     {
       /* Only the active app may grab (EPERM otherwise); an inactive
-	 app's menus close when it's deactivated anyway. */
-      if (NSApp == nil || ![NSApp isActive])
+	 app's menus close when it's deactivated anyway. A press on one
+	 of its status items lets it grab for the item's menu until the
+	 next press elsewhere (WS_SERVER_STATUS_ITEMS). */
+      if (NSApp == nil || (![NSApp isActive] && !statusItemPress))
 	return;
       popupGrabbed = ws_pointer_grab(conn, WS_GRAB_OUTSIDE) == 0;
       NSDebugLLog(@"NextBSD", @"popup grab %s",

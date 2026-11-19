@@ -73,6 +73,16 @@
  * stacks the menus that drop down from it above the Dock, as pop-up
  * menus, so they open over a top Dock instead of under it.
  *
+ * Servers with WS_SERVER_STATUS_ITEMS also hear which window the bar is
+ * (ws_set_menu_bar_window(), "The menu bar" in WSProtocol.h), as on
+ * macOS: WindowServer puts it on the menu bar's level, above the Dock,
+ * gives it the main display's top edge and shows it while the app is
+ * active, swapping it with the outgoing app's bar in the same frame.
+ * libs-gui still orders it out when the app is deactivated and in again
+ * when it's activated (NSMenuPanel hides on deactivation); WindowServer
+ * keeps that order for when the window stops being the bar. Status
+ * items (NextBSDStatusBar.m) cover the bar's right end.
+ *
  * In the in-window style an app with no window that can be main (and so
  * carry the menu) shows no menu at all, as on a tiling desktop: no
  * floating or torn-off menu, no bar of its own. Its menu comes back
@@ -528,6 +538,31 @@ collectTornOff(NSMenu *menu, NSMutableArray *found)
       if (height < 1)
 	height = (int)ceil([NSMenuView menuBarHeight]);
     }
+#ifdef WS_SERVER_STATUS_ITEMS
+  /* Name the bar window too: WindowServer puts it on the menu bar's
+     level, along the main display's top, and shows it while the app is
+     active, swapping it with the outgoing app's in one frame. A bar
+     not made yet is named when it's ordered in (-orderwindow:::). */
+  if (ws_server_flags(conn) & WS_SERVER_STATUS_ITEMS)
+    {
+      int win = height > 0
+	? (int)[[[main menuRepresentation] window] windowNumber] : 0;
+
+      if (height > 0 && win == 0)
+	return;
+      if (height == reportedMenuBar && win == reportedMenuBarWindow)
+	return;
+      NSDebugLLog(@"NextBSD", @"menu bar window %d, %d pixels", win, height);
+      if (ws_set_menu_bar_window(conn, (uint32_t)(win != 0 ? win
+					     : reportedMenuBarWindow),
+				 (uint32_t)height) == 0)
+	{
+	  reportedMenuBar = height;
+	  reportedMenuBarWindow = win;
+	}
+      return;
+    }
+#endif
   if (height == reportedMenuBar)
     return;
   reportedMenuBar = height;
