@@ -32,6 +32,8 @@
 #include "nextbsd/NextBSDServer.h"
 #include "nextbsd/NextBSDCairoShmSurface.h"
 #include <Foundation/NSDebug.h>
+#include <AppKit/NSGraphics.h>
+#include <AppKit/NSWindow.h>
 #include <cairo.h>
 #include <math.h>
 #include <string.h>
@@ -98,6 +100,24 @@ rects_add(struct nextbsd_rects *s, NSRect r)
   rects_add(s, r);
 }
 
+/*
+ * The window's backing scale: its -backingScaleFactor, which is the
+ * app's (NextBSDServer.h) unless an NSWindow subclass answers another,
+ * as a desktop picture that draws the whole screen every frame may (1,
+ * to draw a quarter of the pixels and let WindowServer scale it up).
+ */
+static int
+window_scale(int number)
+{
+  NSWindow *nswin = GSWindowWithNumber(number);
+  long	    s;
+
+  if (nswin == nil)
+    return [NextBSDServer backingScale];
+  s = lround([nswin backingScaleFactor]);
+  return s < 1 ? 1 : (s > 4 ? 4 : (int)s);
+}
+
 @implementation NextBSDCairoShmSurface
 
 - (id) initWithDevice: (void *)device
@@ -117,7 +137,7 @@ rects_add(struct nextbsd_rects *s, NSRect r)
      native-endian ARGB, which is CAIRO_FORMAT_ARGB32. HiDPI: width and
      height are points; the store has scale times the pixels, and
      cairo's device scale makes GNUstep's drawing fill them. */
-  scale = [NextBSDServer backingScale];
+  scale = window_scale(window);
   _surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, width * scale,
 					height * scale);
   if (cairo_surface_status(_surface) == CAIRO_STATUS_SUCCESS && scale != 1)

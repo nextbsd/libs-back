@@ -92,6 +92,10 @@
  * WindowServer scales its windows until it's started again. The
  * NBBackingScale default (or NB_BACKING_SCALE in the environment) sets
  * another scale, 1 to draw at 1x and leave the scaling to WindowServer.
+ * A window can have its own: its surface has the scale its NSWindow's
+ * -backingScaleFactor answers when the surface is made, so an NSWindow
+ * subclass answering 1 draws that window at 1x (a desktop picture that
+ * redraws the whole screen on the CPU every frame, say).
  *
  * Cursors: on servers with WS_SERVER_WINDOW_CURSOR, -setcursor: gives
  * the cursor to the window the pointer is over (the window of the mouse
