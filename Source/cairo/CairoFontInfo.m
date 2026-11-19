@@ -62,7 +62,28 @@ void set_font_options(cairo_font_options_t *options)
           /*
            * Default hinting to off if scale is set to something other than 1.0. As
            * hinting + scaling breaks assumptions about glyph advancement made in gui.
+           *
+           * NextBSD: the nextbsd backend's HiDPI scale comes from the
+           * WindowServer (+[NextBSDServer backingScale]), not GSScaleFactor.
+           * Text is laid out in points and drawn at that many pixels per
+           * point, so advances hinted to whole points at 1x leave gaps
+           * inside words at 2x ("pix els"). Looked up at run time: other
+           * backends share this file.
            */
+          if (scale == 0.0f || scale == 1.0f)
+            {
+              Class server = NSClassFromString(@"NextBSDServer");
+
+              if (server != Nil
+                  && [server respondsToSelector: @selector(backingScale)])
+                {
+                  int (*backingScale)(id, SEL) = (int (*)(id, SEL))
+                    [server methodForSelector: @selector(backingScale)];
+
+                  scale = (float)backingScale(server,
+                                              @selector(backingScale));
+                }
+            }
           if (scale == 0.0f || scale == 1.0f)
             {
               hinting = 33;
