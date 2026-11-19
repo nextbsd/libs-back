@@ -92,7 +92,10 @@
   NSMenu	*itemMenu;	/* the status item's menu */
   BOOL		 shown;
   BOOL		 removed;	/* -[NSStatusBar removeStatusItem:] */
+  NSInteger	 priority;	/* -setStatusItemPriority: */
 }
+- (void) setStatusItemPriority: (NSInteger)priority;
+- (NSInteger) statusItemPriority;
 - (void) _remove;
 - (void) _pressed: (NSEvent *)e;
 - (void) _closeMenu;
@@ -374,6 +377,38 @@ nextbsdSystemStatusBar(id cls, SEL sel)
 			     NSHeight(bounds))];
 }
 
+/*
+ * Where the item goes among every app's items, for the system's own
+ * (the clock, the Dock's extras): WindowServer puts larger priorities
+ * further right (WS_STATUS_PRIORITY_* in WSTypes.h: 0 for apps, the
+ * default, 1000 for the system's items, 2000 for the clock), and equal
+ * ones in the order they first came. Not in libs-gui's NSStatusItem, so
+ * an app declares it and asks first:
+ *
+ *   @interface NSStatusItem (NextBSD)
+ *   - (void) setStatusItemPriority: (NSInteger)priority;
+ *   @end
+ *
+ *   if ([item respondsToSelector: @selector(setStatusItemPriority:)])
+ *     [item setStatusItemPriority: 2000];
+ *
+ * Best set before the item has an image or title, so it shows in its
+ * place from the start.
+ */
+- (void) setStatusItemPriority: (NSInteger)p
+{
+  if (p == priority)
+    return;
+  priority = p;
+  [server() _sendStatusItem: [server() windowWithNumber:
+				   [[holder window] windowNumber]]];
+}
+
+- (NSInteger) statusItemPriority
+{
+  return priority;
+}
+
 - (void) _windowDidResize: (NSNotification *)n
 {
   [self _layOut];
@@ -589,20 +624,25 @@ nextbsdSystemStatusBar(id cls, SEL sel)
 - (void) _sendStatusItem: (nextbsd_window_t *)w
 {
 #ifdef WS_SERVER_STATUS_ITEMS
-  NSWindow *win;
-  int	    width;
+  NSWindow	    *win;
+  NextBSDStatusItem *item;
+  int		     width, priority;
 
   if (w == NULL || statusItemWidths == NULL)
     return;
   win = GSWindowWithNumber(w->number);
   width = win != nil ? (int)(intptr_t)NSMapGet(statusItemWidths, win) : 0;
-  if (width == w->statusWidth)
+  item = (win != nil && itemsByWindow != NULL)
+    ? NSMapGet(itemsByWindow, win) : nil;
+  priority = item != nil ? (int)[item statusItemPriority]
+    : WS_STATUS_PRIORITY_APP;
+  if (width == w->statusWidth && (width == 0 || priority == w->statusPriority))
     return;
   w->statusWidth = width;
-  NSDebugLLog(@"NextBSD", @"window %d: status item %d points wide",
-	      w->number, width);
-  if (ws_status_item(conn, w->number, (uint32_t)width,
-		     WS_STATUS_PRIORITY_APP) != 0)
+  w->statusPriority = priority;
+  NSDebugLLog(@"NextBSD", @"window %d: status item %d points wide, "
+	      @"priority %d", w->number, width, priority);
+  if (ws_status_item(conn, w->number, (uint32_t)width, priority) != 0)
     NSDebugLLog(@"NextBSD", @"status item: %s", strerror(errno));
 #endif
 }

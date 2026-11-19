@@ -177,6 +177,7 @@ typedef struct nextbsd_window
 				   (WS_SERVER_WINDOW_CURSOR), NULL unknown */
   int		 statusWidth;	/* a status item this wide WindowServer
 				   has (WS_MSG_STATUS_ITEM), 0 none */
+  int		 statusPriority; /* and its priority */
   id		 glOwner;	/* the NSOpenGLContext whose frames are the
 				   window's buffers (NextBSDOpenGL.h), not
 				   retained; the surface doesn't commit */
@@ -389,6 +390,9 @@ typedef struct nextbsd_cursor
 - (void) applyMenuStyle;
 /* Tell WindowServer the Mac menu bar's height (0 for no bar). */
 - (void) _reportMenuBar;
+/* WindowServer's status items reach a new width in from the bar's end
+   (welcome, WS_EVENT_USABLE_AREA): the bar's titles stop short of it. */
+- (void) _statusItemsWidthChanged;
 /* The app's main menu shown as the Mac menu bar, and the menus that drop
    down from it, which open over a top Dock. */
 - (BOOL) _isMacMenuBar: (nextbsd_window_t *)w;

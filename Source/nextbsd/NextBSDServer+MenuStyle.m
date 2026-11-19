@@ -107,6 +107,7 @@
 #include <GNUstepGUI/GSTheme.h>
 
 #include <math.h>
+#include <objc/runtime.h>
 
 #include "nextbsd/NextBSDServer.h"
 
@@ -181,6 +182,87 @@ collectTornOff(NSMenu *menu, NSMutableArray *found)
       collectTornOff(sub, found);
     }
 }
+
+/*
+ * The bar stops its menus short of the status items (servers with
+ * WS_SERVER_STATUS_ITEMS). WindowServer gives the bar the display's
+ * whole width and puts the items above its right end; it says how far
+ * they reach in (ws_status_items_width()). A menu title there would be
+ * cut off by the items, or show between them. libs-gui lays the bar's
+ * titles out from the left whatever the width, so the backend makes
+ * the bar's NSMenuView a NextBSDMenuBarView (the same object, with no
+ * instance variables of its own: only its class changes), which leaves
+ * out the titles that don't fit before the items: from the first one
+ * that would reach under them on, they aren't drawn, the bar's
+ * background is, and a click there opens no menu. They come back as
+ * soon as there's room, when an item goes away.
+ */
+static CGFloat statusItemsWidth = 0;
+
+@interface NextBSDMenuBarView : NSMenuView
+@end
+
+@implementation NextBSDMenuBarView
+
+/* The first title that doesn't fit, or NSNotFound. */
+- (NSUInteger) _firstLeftOut
+{
+  CGFloat    end = NSWidth([self bounds]) - statusItemsWidth;
+  NSUInteger i, n = [[self menu] numberOfItems];
+
+  if (statusItemsWidth <= 0)
+    return NSNotFound;
+  for (i = 0; i < n; i++)
+    if (NSMaxX([self rectOfItemAtIndex: i]) > end)
+      return i;
+  return NSNotFound;
+}
+
+- (NSInteger) indexOfItemAtPoint: (NSPoint)point
+{
+  NSInteger  i = [super indexOfItemAtPoint: point];
+  NSUInteger cut = [self _firstLeftOut];
+
+  return (cut != NSNotFound && i >= (NSInteger)cut) ? -1 : i;
+}
+
+- (void) drawRect: (NSRect)rect
+{
+  NSUInteger cut = [self _firstLeftOut];
+  NSRect     b = [self bounds];
+  CGFloat    x;
+  NSRect     left, right;
+
+  if (cut == NSNotFound)
+    {
+      [super drawRect: rect];
+      return;
+    }
+  x = NSMinX([self rectOfItemAtIndex: cut]);
+  left = NSIntersectionRect(rect, NSMakeRect(NSMinX(b), NSMinY(b),
+					     x - NSMinX(b), NSHeight(b)));
+  right = NSIntersectionRect(rect, NSMakeRect(x, NSMinY(b),
+					      NSMaxX(b) - x, NSHeight(b)));
+  if (!NSIsEmptyRect(left))
+    {
+      [NSGraphicsContext saveGraphicsState];
+      NSRectClip(left);
+      [super drawRect: left];
+      [NSGraphicsContext restoreGraphicsState];
+    }
+  if (!NSIsEmptyRect(right))
+    {
+      [NSGraphicsContext saveGraphicsState];
+      NSRectClip(right);
+      [[GSTheme theme] drawBackgroundForMenuView: self
+				       withFrame: b
+				       dirtyRect: right
+				      horizontal: YES];
+      [NSGraphicsContext restoreGraphicsState];
+    }
+}
+
+@end
 
 @implementation NextBSDServer (MenuStyle)
 
@@ -548,6 +630,11 @@ collectTornOff(NSMenu *menu, NSMutableArray *found)
       int win = height > 0
 	? (int)[[[main menuRepresentation] window] windowNumber] : 0;
 
+      /* Its titles stop short of the status items. */
+      if (height > 0
+	  && [[main menuRepresentation] class] == [NSMenuView class])
+	object_setClass([main menuRepresentation], [NextBSDMenuBarView class]);
+
       if (height > 0 && win == 0)
 	return;
       if (height == reportedMenuBar && win == reportedMenuBarWindow)
@@ -568,6 +655,25 @@ collectTornOff(NSMenu *menu, NSMutableArray *found)
   reportedMenuBar = height;
   NSDebugLLog(@"NextBSD", @"menu bar %d pixels", height);
   ws_set_menu_bar(conn, (uint32_t)height);
+#endif
+}
+
+- (void) _statusItemsWidthChanged
+{
+#ifdef WS_SERVER_STATUS_ITEMS
+  CGFloat  width;
+  NSMenu  *main = [NSApp mainMenu];
+
+  if (conn == NULL || (ws_server_flags(conn) & WS_SERVER_STATUS_ITEMS) == 0)
+    return;
+  width = ws_status_items_width(conn);
+  if (width == statusItemsWidth)
+    return;
+  NSDebugLLog(@"NextBSD", @"status items %g points in from the bar's end",
+	      width);
+  statusItemsWidth = width;
+  if ([[main menuRepresentation] isKindOfClass: [NextBSDMenuBarView class]])
+    [[main menuRepresentation] setNeedsDisplay: YES];
 #endif
 }
 

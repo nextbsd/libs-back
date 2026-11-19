@@ -472,6 +472,7 @@ watchedModes(void)
      changes it live (NextBSDServer+MenuStyle.m). */
   reportedMenuBar = -1;
   [self _setUpMenuStyle];
+  [self _statusItemsWidthChanged];
   /* NSStatusBar's items at the menu bar's right end
      (NextBSDStatusBar.m). */
   [self _setUpStatusItems];
@@ -1231,6 +1232,7 @@ add_display(const ws_display_info_t *display, void *ctx)
   NSDebugLLog(@"NextBSD", @"usable area %d,%d %dx%d", area.x, area.y,
 	      area.width, area.height);
   [self _keepMenusOutOfDock];
+  [self _statusItemsWidthChanged];
 }
 
 - (void *) serverDevice
