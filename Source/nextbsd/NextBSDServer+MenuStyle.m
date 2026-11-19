@@ -602,6 +602,7 @@ static CGFloat statusItemsWidth = 0;
   NSWindow *win;
   NSRect    vis, frame;
   NSString *location;
+  NSArray  *screens;
 
   if ([NSDate timeIntervalSinceReferenceDate] >= menuSettleUntil)
     menuSettleUntil = 0;
@@ -610,7 +611,12 @@ static CGFloat statusItemsWidth = 0;
 	  && currentMenuInterfaceStyle() != GSWindowMakerInterfaceStyle))
     return;
   win = [[main menuRepresentation] window];
-  vis = [[NSScreen mainScreen] visibleFrame];
+  /* The main display: the first screen (-screenList). +mainScreen is
+     the key window's, which may be another display. */
+  screens = [NSScreen screens];
+  if ([screens count] == 0)
+    return;
+  vis = [[screens objectAtIndex: 0] visibleFrame];
   if (NSIsEmptyRect(vis))
     return;
   if (settleMenuLocation != nil)
