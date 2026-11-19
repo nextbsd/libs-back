@@ -55,12 +55,14 @@
 
 #include "config.h"
 #include <AppKit/NSApplication.h>
+#include <AppKit/NSColor.h>
 #include <AppKit/NSEvent.h>
 #include <AppKit/NSGraphics.h>
 #include <AppKit/NSImage.h>
 #include <AppKit/NSInterfaceStyle.h>
 #include <AppKit/NSMenu.h>
 #include <AppKit/NSMenuItem.h>
+#include <AppKit/NSMenuItemCell.h>
 #include <AppKit/NSMenuView.h>
 #include <AppKit/NSPanel.h>
 #include <AppKit/NSStatusBar.h>
@@ -93,6 +95,10 @@
   BOOL		 shown;
   BOOL		 removed;	/* -[NSStatusBar removeStatusItem:] */
   NSInteger	 priority;	/* -setStatusItemPriority: */
+  NSImage	*alternateImage; /* shown while highlighted */
+  NSImage	*tintedImage;	/* or the image in the highlighted text
+				   colour, for -image */
+  NSImage	*tintedFrom;
 }
 - (void) setStatusItemPriority: (NSInteger)priority;
 - (NSInteger) statusItemPriority;
@@ -271,6 +277,9 @@ nextbsdSystemStatusBar(id cls, SEL sel)
   [self _remove];
   [button setSubmenu: nil];
   RELEASE(itemMenu);
+  RELEASE(alternateImage);
+  RELEASE(tintedImage);
+  RELEASE(tintedFrom);
   RELEASE(button);
   RELEASE(holder);
   [super dealloc];
@@ -343,6 +352,8 @@ nextbsdSystemStatusBar(id cls, SEL sel)
       /* Without a submenu a click sends the action. */
       [button setAction: itemMenu == nil ? @selector(_buttonClicked:) : NULL];
     }
+
+  [self _setHighlightedImage];
 
   [[holder menuRepresentation] setNeedsSizing: YES];
   [holder sizeToFit];
@@ -470,6 +481,66 @@ nextbsdSystemStatusBar(id cls, SEL sel)
   [view detachSubmenu];
   if ([holder attachedMenu] != nil)
     [[holder attachedMenu] close];
+}
+
+/*
+ * The theme highlights the item while it's pressed or its menu is open,
+ * with the menus' highlight colour behind it and their highlighted text
+ * colour for a title. An image stays as it is, so a glyph drawn in the
+ * bar's text colour would vanish into a light highlight. The item's
+ * cell shows the alternate image while highlighted, as an NSButtonCell
+ * does (NSContentsCellMask); without one, a copy of the image in the
+ * highlighted text colour, as macOS shows a template image.
+ */
+- (NSImage *) _tinted: (NSImage *)image
+{
+  NSImage *tinted;
+  NSSize   size = [image size];
+
+  if (image == tintedFrom)
+    return tintedImage;
+  ASSIGN(tintedFrom, image);
+  DESTROY(tintedImage);
+  if (image == nil || size.width < 1 || size.height < 1)
+    return nil;
+  tinted = [[NSImage alloc] initWithSize: size];
+  [tinted lockFocus];
+  [image drawAtPoint: NSZeroPoint
+	    fromRect: NSZeroRect
+	   operation: NSCompositeSourceOver
+	    fraction: 1.0];
+  [[NSColor selectedMenuItemTextColor] set];
+  NSRectFillUsingOperation(NSMakeRect(0, 0, size.width, size.height),
+			   NSCompositeSourceAtop);
+  [tinted unlockFocus];
+  tintedImage = tinted;
+  return tintedImage;
+}
+
+- (void) _setHighlightedImage
+{
+  NSMenuItemCell *cell;
+  NSImage	 *alt = alternateImage;
+
+  cell = [[holder menuRepresentation] menuItemCellForItemAtIndex: 0];
+  if (alt == nil)
+    alt = [self _tinted: [self image]];
+  [cell setAlternateImage: alt];
+  if (alt != nil)
+    [cell setHighlightsBy: [cell highlightsBy] | NSContentsCellMask];
+  else
+    [cell setHighlightsBy: [cell highlightsBy] & ~NSContentsCellMask];
+}
+
+- (NSImage *) alternateImage
+{
+  return alternateImage;
+}
+
+- (void) setAlternateImage: (NSImage *)image
+{
+  ASSIGN(alternateImage, image);
+  [self _setNeedsUpdate];
 }
 
 - (void) _buttonClicked: (id)sender
