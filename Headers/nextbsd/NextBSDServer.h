@@ -241,6 +241,9 @@ typedef struct nextbsd_cursor
   BOOL			 launched;	/* NSApplicationWillFinishLaunching */
   NSArray		*tornOffMenus;	/* to show again back in NeXT style */
   NSArray		*nextMenuOrder;	/* the main menu's items in NeXT style */
+  NSString		*nextMenuLocation; /* its place, leaving NeXT style */
+  NSString		*settleMenuLocation; /* and back in it (-_settleMainMenu) */
+  NSTimeInterval	 menuSettleUntil; /* settling it until then, or 0 */
   /* status items (NextBSDStatusBar.m): NSWindow -> width in points */
   NSMapTable		*statusItemWidths;
   BOOL			 statusItemPress; /* the last press was on one */
@@ -390,6 +393,9 @@ typedef struct nextbsd_cursor
 - (void) applyMenuStyle;
 /* Tell WindowServer the Mac menu bar's height (0 for no bar). */
 - (void) _reportMenuBar;
+/* The usable area changed: just after a switch to the NeXT style, put
+   the main menu back at its place once it settles. */
+- (void) _scheduleMainMenuSettle;
 /* WindowServer's status items reach a new width in from the bar's end
    (welcome, WS_EVENT_USABLE_AREA): the bar's titles stop short of it. */
 - (void) _statusItemsWidthChanged;

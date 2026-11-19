@@ -96,6 +96,7 @@
 #include <AppKit/NSInterfaceStyle.h>
 #include <AppKit/NSMenu.h>
 #include <AppKit/NSMenuView.h>
+#include <AppKit/NSScreen.h>
 #include <AppKit/NSWindow.h>
 #include <Foundation/NSArray.h>
 #include <Foundation/NSDebug.h>
@@ -146,6 +147,25 @@ static NSInterfaceStyle
 currentMenuInterfaceStyle(void)
 {
   return NSInterfaceStyleForKey(GSMenuStyleKey, nil);
+}
+
+/* Settling the NeXT main menu after a switch (-_settleMainMenu): for
+   this long after it, this long after the usable area last changed. */
+#define MENU_SETTLE_WINDOW	3.0
+#define MENU_SETTLE_DELAY	0.3
+
+/* The NeXT main menu's saved place (NSMenuLocations), or nil. */
+static NSString *
+savedMainMenuLocation(void)
+{
+  id locations = [[NSUserDefaults standardUserDefaults]
+		   objectForKey: @"NSMenuLocations"];
+  id location;
+
+  if (![locations isKindOfClass: [NSDictionary class]])
+    return nil;
+  location = [locations objectForKey: @"\033"];
+  return [location isKindOfClass: [NSString class]] ? location : nil;
 }
 
 /*
@@ -360,6 +380,9 @@ static CGFloat statusItemsWidth = 0;
     }
   DESTROY(tornOffMenus);
   DESTROY(nextMenuOrder);
+  DESTROY(nextMenuLocation);
+  DESTROY(settleMenuLocation);
+  [NSObject cancelPreviousPerformRequestsWithTarget: self];
 }
 
 - (void) _menuStyleAppWillFinishLaunching: (NSNotification *)n
@@ -499,32 +522,34 @@ static CGFloat statusItemsWidth = 0;
       while ((m = [e nextObject]) != nil)
 	[m setTornOff: NO];
       ASSIGN(nextMenuOrder, [NSArray arrayWithArray: [main itemArray]]);
+      /* Where the user left the NeXT menu, for coming back. */
+      ASSIGN(nextMenuLocation, savedMainMenuLocation());
     }
 
   if (old == NSMacintoshInterfaceStyle)
     [self _dropOwnMenuBarStrip];
 
-  /* Back to the NeXT style in an app that isn't active: libs-gui puts
-     the menu where the user left it (NSMenuLocations), but its window
-     is hidden, and the move then drops that place from the defaults
-     (-[NSMenu _updateUserDefaults:]). Keep it. */
+  /* Back to the NeXT style: libs-gui puts the menu where the user left
+     it (NSMenuLocations) or at the top of the usable area, but that's
+     the usable area of the moment, which may still leave out the Mac
+     menu bar strip or the Dock's old edge, and every move of the menu
+     on the way saves its new place (-[NSMenu _updateUserDefaults:]), or
+     drops it while the menu is hidden in an app that isn't active. So
+     keep the place from before the switch, and put the menu there again
+     once the usable area settles (-_settleMainMenu). */
   rootLocation = nil;
-  if ((new == NSNextStepInterfaceStyle || new == GSWindowMakerInterfaceStyle)
-      && ![NSApp isActive])
+  if (new == NSNextStepInterfaceStyle || new == GSWindowMakerInterfaceStyle)
     {
-      id locations = [[NSUserDefaults standardUserDefaults]
-		       objectForKey: @"NSMenuLocations"];
-
-      if ([locations isKindOfClass: [NSDictionary class]])
-	rootLocation = [locations objectForKey: @"\033"];
+      rootLocation = nextMenuLocation != nil ? nextMenuLocation
+	: savedMainMenuLocation();
+      ASSIGN(settleMenuLocation, rootLocation);
+      DESTROY(nextMenuLocation);
+      menuSettleUntil = [NSDate timeIntervalSinceReferenceDate]
+	+ MENU_SETTLE_WINDOW;
+      [self _scheduleMainMenuSettle];
     }
 
   [main setMain: YES];
-
-  if ([rootLocation isKindOfClass: [NSString class]])
-    [self performSelector: @selector(_keepMainMenuLocation:)
-	       withObject: rootLocation
-	       afterDelay: 0.5];
 
   if (new == NSNextStepInterfaceStyle || new == GSWindowMakerInterfaceStyle)
     [self _restoreNextMenuOrder: main];
@@ -539,7 +564,78 @@ static CGFloat statusItemsWidth = 0;
     }
 }
 
-/* Put the NeXT main menu's saved place back if libs-gui dropped it. */
+/*
+ * Settling the NeXT main menu after a switch to the NeXT style. The
+ * usable area changes in steps after one: the Mac menu bar strip goes
+ * once the active app reports it has none, and for a change of window
+ * mode the Dock moves to that mode's edge. Each step pushes the menu
+ * about (-_keepMenusOutOfDock, and libs-gui placing it in the usable
+ * area of the moment). So for MENU_SETTLE_WINDOW seconds after the
+ * switch, MENU_SETTLE_DELAY after the last change of the usable area,
+ * put the menu at the top of the settled usable area of the main
+ * display, as far along it as it was before the switch (at its left
+ * end if it had no place), and save that place.
+ */
+- (void) _scheduleMainMenuSettle
+{
+  if (menuSettleUntil == 0)
+    return;
+  /* Long after the switch, a change is the user's (the Dock moved): a
+     menu they've moved since stays where it is. */
+  if ([NSDate timeIntervalSinceReferenceDate] >= menuSettleUntil)
+    {
+      menuSettleUntil = 0;
+      DESTROY(settleMenuLocation);
+      return;
+    }
+  [NSObject cancelPreviousPerformRequestsWithTarget: self
+					   selector: @selector(_settleMainMenu)
+					     object: nil];
+  [self performSelector: @selector(_settleMainMenu)
+	     withObject: nil
+	     afterDelay: MENU_SETTLE_DELAY];
+}
+
+- (void) _settleMainMenu
+{
+  NSMenu   *main = [NSApp mainMenu];
+  NSWindow *win;
+  NSRect    vis, frame;
+  NSString *location;
+
+  if ([NSDate timeIntervalSinceReferenceDate] >= menuSettleUntil)
+    menuSettleUntil = 0;
+  if (main == nil || [[main menuRepresentation] isHorizontal]
+      || (currentMenuInterfaceStyle() != NSNextStepInterfaceStyle
+	  && currentMenuInterfaceStyle() != GSWindowMakerInterfaceStyle))
+    return;
+  win = [[main menuRepresentation] window];
+  vis = [[NSScreen mainScreen] visibleFrame];
+  if (NSIsEmptyRect(vis))
+    return;
+  if (settleMenuLocation != nil)
+    [win setFrameFromString: settleMenuLocation];
+  frame = [win frame];
+  if (settleMenuLocation == nil || NSMinX(frame) < NSMinX(vis))
+    frame.origin.x = NSMinX(vis);
+  else if (NSMaxX(frame) > NSMaxX(vis))
+    frame.origin.x = MAX(NSMinX(vis), NSMaxX(vis) - NSWidth(frame));
+  frame.origin.y = NSMaxY(vis) - NSHeight(frame);
+  [win setFrameOrigin: frame.origin];
+  NSDebugLLog(@"NextBSD", @"main menu settled at %@",
+	      NSStringFromRect([win frame]));
+  /* Once the moves' saving is done, whatever it saved or dropped. */
+  location = [win stringWithSavedFrame];
+  if (location != nil)
+    [self performSelector: @selector(_keepMainMenuLocation:)
+	       withObject: location
+	       afterDelay: MENU_SETTLE_DELAY];
+  if (menuSettleUntil == 0)
+    DESTROY(settleMenuLocation);
+}
+
+/* Save the NeXT main menu's place after a switch, whatever libs-gui
+   saved or dropped on the way. */
 - (void) _keepMainMenuLocation: (NSString *)location
 {
   NSUserDefaults      *defs = [NSUserDefaults standardUserDefaults];
@@ -547,7 +643,7 @@ static CGFloat statusItemsWidth = 0;
   NSMutableDictionary *locations;
 
   if ([old isKindOfClass: [NSDictionary class]]
-      && [old objectForKey: @"\033"] != nil)
+      && [location isEqual: [old objectForKey: @"\033"]])
     return;
   locations = [old isKindOfClass: [NSDictionary class]]
     ? [[old mutableCopy] autorelease] : [NSMutableDictionary dictionary];
