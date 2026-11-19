@@ -1649,10 +1649,20 @@ add_display(const ws_display_info_t *display, void *ctx)
 	 the usable area leaves out and a top Dock sits below. With
 	 several displays that's the main display's top, where libs-gui
 	 puts it only when the key window is there (+[NSScreen
-	 mainScreen]), and as wide as that display. */
+	 mainScreen]), and as wide as that display. A bar WindowServer
+	 places (named with ws_set_menu_bar_window()) is on the display
+	 with focus, which every display's strip can be
+	 (apps-windowserver#100): it stays on the display WindowServer
+	 put it on, so a resize doesn't take it back to the main one. */
       if ([self _isMacMenuBar: w])
 	{
-	  b = [self boundsForScreen: [self mainScreenNumber]];
+	  n = [self mainScreenNumber];
+#ifdef WS_SERVER_STATUS_ITEMS
+	  if (w->number == reportedMenuBarWindow && reportedMenuBar > 0
+	      && !NSIsEmptyRect(w->frame))
+	    n = [self screenForRect: w->frame];
+#endif
+	  b = [self boundsForScreen: n];
 	  if (displayCount > 1 && !NSIsEmptyRect(b))
 	    frame = NSMakeRect(NSMinX(b), NSMaxY(b) - NSHeight(frame),
 			       NSWidth(b), NSHeight(frame));
