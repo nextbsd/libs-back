@@ -1233,6 +1233,7 @@ add_display(const ws_display_info_t *display, void *ctx)
 	      area.width, area.height);
   [self _keepMenusOutOfDock];
   [self _statusItemsWidthChanged];
+  [self _scheduleMainMenuSettle];
 }
 
 - (void *) serverDevice
@@ -1611,6 +1612,7 @@ add_display(const ws_display_info_t *display, void *ctx)
   int	  main = [self mainScreenNumber];
   NSRect  u = [self visibleFrameForScreen: main];
   NSRect  m = [self boundsForScreen: main];
+  CGFloat strip = 0;
 
   if (NSIsEmptyRect(u))
     return frame;
@@ -1621,7 +1623,14 @@ add_display(const ws_display_info_t *display, void *ctx)
   else if (NSMaxX(u) < NSMaxX(m) && NSMaxX(frame) > NSMaxX(u)
 	   && NSWidth(frame) <= NSWidth(u))
     frame.origin.x = NSMaxX(u) - NSWidth(frame);	/* right Dock */
-  if (NSMaxY(u) < NSMaxY(m) && NSMaxY(frame) > NSMaxY(u)
+#ifdef WS_SERVER_MENU_BAR
+  /* A Mac menu bar strip along the top isn't a top Dock: it's there
+     for a moment when the style changes to the NeXT one, until the
+     active app reports it has no bar, and the menu goes under it. */
+  if (conn != NULL && (ws_server_flags(conn) & WS_SERVER_MENU_BAR) != 0)
+    strip = (CGFloat)ws_menu_bar_height(conn);
+#endif
+  if (NSMaxY(u) + strip < NSMaxY(m) && NSMaxY(frame) > NSMaxY(u)
       && NSHeight(frame) <= NSHeight(u))
     frame.origin.y = NSMaxY(u) - NSHeight(frame);	/* top Dock */
   else if (NSMinY(u) > NSMinY(m) && NSMinY(frame) < NSMinY(u))
