@@ -97,6 +97,22 @@
  * subclass answering 1 draws that window at 1x (a desktop picture that
  * redraws the whole screen on the CPU every frame, say).
  *
+ * Several displays (WindowServers with WS_SERVER_DISPLAYS): each display
+ * is a rectangle of one desktop in points, and there is an NSScreen per
+ * display, the main one first, so +[NSScreen screens] starts with it and
+ * +mainScreen is it while the app has no key window. The screens' frames
+ * are flipped about the desktop's bounding box (ws_screen_info_t), as
+ * window frames are, and each one's visibleFrame is its usable area: the
+ * main display's without the menu bar and the Dock's strip, the others'
+ * whole. The whole desktop has one backing scale, so windows keep theirs
+ * wherever they go. When displays come or go, or one moves or changes
+ * mode (WS_EVENT_DISPLAYS_CHANGED), the backend lists them again, and
+ * the app hears NSApplicationDidChangeScreenParametersNotification once
+ * the screen, usable-area and window-frame events that follow are in.
+ * The Mac menu bar goes on the main display, and the NeXT main menu is
+ * kept out of the Dock's strip there; submenus and pop-ups are kept on
+ * the display they open on. Older servers have one screen, as before.
+ *
  * Cursors: on servers with WS_SERVER_WINDOW_CURSOR, -setcursor: gives
  * the cursor to the window the pointer is over (the window of the mouse
  * event libs-gui is handling), so WindowServer shows each window's own
@@ -136,6 +152,7 @@
 
 @class NextBSDCairoShmSurface;
 @class NSImage;
+@class NSMutableDictionary;
 @class NSTimer;
 
 /* One GNUstep window, as the backend sees it. */
@@ -181,7 +198,9 @@ typedef struct nextbsd_cursor
   BOOL			 serverActivating;
   BOOL			 serverDeactivating;
   /* pointer state */
-  NSPoint		 pointerScreen;	/* WindowServer coordinates */
+  NSPoint		 pointerScreen;	/* WindowServer coordinates, which can
+					   be negative with several displays */
+  BOOL			 pointerKnown;	/* pointerScreen is set */
   int			 pointerWindow;
   nextbsd_cursor_t	*currentCursor;
   nextbsd_cursor_t	*arrowCursor;
@@ -197,11 +216,17 @@ typedef struct nextbsd_cursor
   ws_rect_t		 usable;
   BOOL			 haveUsableArea;
   /* NSApplicationDidChangeScreenParametersNotification is due once the
-     events read so far are handled; the screen's height changed by
-     pendingHeightDelta since the last one (see -_postScreenParameters) */
+     events read so far are handled; while it goes out, screenMoves has
+     the move libs-gui makes again of each window, which -placewindow::
+     leaves out (see -_postScreenParameters) */
   BOOL			 screenParamsPending;
-  CGFloat		 pendingHeightDelta;
-  CGFloat		 postingHeightDelta;
+  NSMutableDictionary	*screenMoves;
+  /* the displays (WS_SERVER_DISPLAYS), main first, mirrors left out;
+     none on older servers, which have the one screen */
+#ifdef WS_SERVER_DISPLAYS
+  ws_display_info_t	 displays[WS_MAX_DISPLAYS];
+#endif
+  unsigned		 displayCount;
   /* minimizing (WS_SERVER_MINIMIZE) */
   BOOL			 serverMinimizes;
   NSImage		*uploadedIcon;	/* app icon WindowServer has */
@@ -270,21 +295,36 @@ typedef struct nextbsd_cursor
 - (BOOL) setWindowServerSettings: (NSDictionary *)settings;
 
 - (nextbsd_window_t *) windowWithNumber: (int)win;
+/* Where WindowServer's y = 0 is in GNUstep's coordinates, which flip
+   about the screen (the bounding box of the displays): GNUstep's y is
+   this minus WindowServer's. The screen's height when its top is 0. */
 - (CGFloat) screenHeight;
 
-/* Convert a GNUstep screen rect to a WindowServer rect and back. */
 - (void) setScreenInfo: (const ws_screen_info_t *)info;
 
 /* NSScreen's visibleFrame for the screen: the usable area WindowServer
    reports, in GNUstep coordinates, or NSZeroRect from servers without
    one (libs-gui's own answer then counts). */
 - (NSRect) visibleFrameForScreen: (int)aScreen;
-/* WS_EVENT_SCREEN_CHANGED and WS_EVENT_USABLE_AREA. */
+/* YES for the main display's screen (and the one screen of older
+   servers): the one with the menu bar and the Dock. */
+- (BOOL) isMainScreen: (int)aScreen;
+/* The main display's screen number. */
+- (int) mainScreenNumber;
+/* The screen number of the display most of rect is on (GNUstep
+   coordinates), the main one if it's on none. */
+- (int) screenForRect: (NSRect)rect;
+/* WS_EVENT_SCREEN_CHANGED, WS_EVENT_USABLE_AREA and
+   WS_EVENT_DISPLAYS_CHANGED. */
 - (void) _screenChanged: (const ws_screen_info_t *)info;
 - (void) _usableAreaChanged: (ws_rect_t)area;
+- (void) _displaysChanged;
+/* List the displays again (WS_SERVER_DISPLAYS). */
+- (void) _loadDisplays;
 /* Reset NSScreen and post NSApplicationDidChangeScreenParametersNotification. */
 - (void) _postScreenParameters;
 - (void) _notifyAllFrames;
+/* Convert a GNUstep screen rect to a WindowServer rect and back. */
 - (ws_rect_t) wsRectFromNSRect: (NSRect)r;
 - (NSRect) nsRectFromWSRect: (ws_rect_t)r;
 

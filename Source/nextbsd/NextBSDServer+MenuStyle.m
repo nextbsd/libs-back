@@ -354,9 +354,14 @@ collectTornOff(NSMenu *menu, NSMutableArray *found)
 - (void) _dropOwnMenuBarStrip
 {
 #ifdef WS_SERVER_MENU_BAR
+  /* The main display's top, in WindowServer's coordinates: 0 unless
+     another display reaches higher. */
+  CGFloat top = [self screenHeight]
+    - NSMaxY([self boundsForScreen: [self mainScreenNumber]]);
+
   if (haveUsableArea && [NSApp isActive] && reportedMenuBar > 0
       && (int)ws_menu_bar_height(conn) == reportedMenuBar
-      && usable.y >= reportedMenuBar)
+      && usable.y - top >= reportedMenuBar)
     {
       usable.y -= reportedMenuBar;
       usable.height += reportedMenuBar;
