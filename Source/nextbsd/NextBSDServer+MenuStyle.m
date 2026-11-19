@@ -572,8 +572,9 @@ static CGFloat statusItemsWidth = 0;
  * about (-_keepMenusOutOfDock, and libs-gui placing it in the usable
  * area of the moment). So for MENU_SETTLE_WINDOW seconds after the
  * switch, MENU_SETTLE_DELAY after the last change of the usable area,
- * put the menu at its place from before the switch, or at the top left
- * of the settled usable area if it had none.
+ * put the menu at the top of the settled usable area of the main
+ * display, as far along it as it was before the switch (at its left
+ * end if it had no place), and save that place.
  */
 - (void) _scheduleMainMenuSettle
 {
@@ -600,6 +601,7 @@ static CGFloat statusItemsWidth = 0;
   NSMenu   *main = [NSApp mainMenu];
   NSWindow *win;
   NSRect    vis, frame;
+  NSString *location;
 
   if ([NSDate timeIntervalSinceReferenceDate] >= menuSettleUntil)
     menuSettleUntil = 0;
@@ -608,28 +610,31 @@ static CGFloat statusItemsWidth = 0;
 	  && currentMenuInterfaceStyle() != GSWindowMakerInterfaceStyle))
     return;
   win = [[main menuRepresentation] window];
+  vis = [[NSScreen mainScreen] visibleFrame];
+  if (NSIsEmptyRect(vis))
+    return;
   if (settleMenuLocation != nil)
     [win setFrameFromString: settleMenuLocation];
-  else
-    {
-      vis = [[NSScreen mainScreen] visibleFrame];
-      frame = [win frame];
-      if (!NSIsEmptyRect(vis))
-	[win setFrameOrigin: NSMakePoint(NSMinX(vis),
-					 NSMaxY(vis) - NSHeight(frame))];
-    }
+  frame = [win frame];
+  if (settleMenuLocation == nil || NSMinX(frame) < NSMinX(vis))
+    frame.origin.x = NSMinX(vis);
+  else if (NSMaxX(frame) > NSMaxX(vis))
+    frame.origin.x = MAX(NSMinX(vis), NSMaxX(vis) - NSWidth(frame));
+  frame.origin.y = NSMaxY(vis) - NSHeight(frame);
+  [win setFrameOrigin: frame.origin];
   NSDebugLLog(@"NextBSD", @"main menu settled at %@",
 	      NSStringFromRect([win frame]));
-  /* The moves' saving is done by now: the place from before stays. */
-  if (settleMenuLocation != nil)
+  /* Once the moves' saving is done, whatever it saved or dropped. */
+  location = [win stringWithSavedFrame];
+  if (location != nil)
     [self performSelector: @selector(_keepMainMenuLocation:)
-	       withObject: settleMenuLocation
+	       withObject: location
 	       afterDelay: MENU_SETTLE_DELAY];
   if (menuSettleUntil == 0)
     DESTROY(settleMenuLocation);
 }
 
-/* Save the NeXT main menu's place from before a switch, whatever libs-gui
+/* Save the NeXT main menu's place after a switch, whatever libs-gui
    saved or dropped on the way. */
 - (void) _keepMainMenuLocation: (NSString *)location
 {
