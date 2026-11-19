@@ -266,6 +266,9 @@ utf8_string(const char *text, size_t size)
 	 the stacking order in step. */
       if (w->visible && p->buttons == (1u << p->button))
 	[self _stackPlace: w op: NSWindowAbove relativeTo: 0];
+      /* A press on a status item lets the app grab the pointer for its
+	 menu while it isn't active (-_updatePopupGrab). */
+      statusItemPress = [self _isStatusItem: w];
       type = (button == WS_BUTTON_LEFT) ? NSLeftMouseDown
 	: (button == WS_BUTTON_RIGHT) ? NSRightMouseDown : NSOtherMouseDown;
       break;
@@ -334,6 +337,8 @@ utf8_string(const char *text, size_t size)
   NSMenu     *main = (NSApp != nil) ? [NSApp mainMenu] : nil;
   NSMenuView *view;
 
+  /* A status item's menu is left open the same way. */
+  [self _closeStatusItemMenus];
   if (main == nil || [main attachedMenu] == nil
       || NSInterfaceStyleForKey(@"NSMenuInterfaceStyle", nil)
 	 == NSNextStepInterfaceStyle)
@@ -623,9 +628,12 @@ utf8_string(const char *text, size_t size)
 		isTiled: (ev->u.frame.flags & WS_FRAME_TILED) != 0];
 #endif
 	  /* During a screen change the window hears it with the others,
-	     once the change's events are in (-_notifyAllFrames). */
+	     once the change's events are in (-_notifyAllFrames). A status
+	     item hears it now: WindowServer repacks the items as their
+	     widths change, and a frame queued behind the item's own
+	     resize would take it back to an older width. */
 	  if (!screenParamsPending)
-	    [self _notifyFrame: w post: YES];
+	    [self _notifyFrame: w post: ![self _isStatusItem: w]];
 	}
       break;
 

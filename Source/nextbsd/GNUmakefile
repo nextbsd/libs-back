@@ -36,6 +36,7 @@ NextBSDServer+Events.m \
 NextBSDServer+Cursor.m \
 NextBSDServer+MenuStyle.m \
 NextBSDServer+TiledFrames.m \
+NextBSDStatusBar.m \
 NextBSDDragView.m \
 NextBSDGLContext.m \
 NextBSDGLPixelFormat.m \

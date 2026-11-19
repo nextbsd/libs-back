@@ -73,6 +73,16 @@
  * stacks the menus that drop down from it above the Dock, as pop-up
  * menus, so they open over a top Dock instead of under it.
  *
+ * Servers with WS_SERVER_STATUS_ITEMS also hear which window the bar is
+ * (ws_set_menu_bar_window(), "The menu bar" in WSProtocol.h), as on
+ * macOS: WindowServer puts it on the menu bar's level, above the Dock,
+ * gives it the main display's top edge and shows it while the app is
+ * active, swapping it with the outgoing app's bar in the same frame.
+ * libs-gui still orders it out when the app is deactivated and in again
+ * when it's activated (NSMenuPanel hides on deactivation); WindowServer
+ * keeps that order for when the window stops being the bar. Status
+ * items (NextBSDStatusBar.m) cover the bar's right end.
+ *
  * In the in-window style an app with no window that can be main (and so
  * carry the menu) shows no menu at all, as on a tiling desktop: no
  * floating or torn-off menu, no bar of its own. Its menu comes back
@@ -97,6 +107,7 @@
 #include <GNUstepGUI/GSTheme.h>
 
 #include <math.h>
+#include <objc/runtime.h>
 
 #include "nextbsd/NextBSDServer.h"
 
@@ -171,6 +182,87 @@ collectTornOff(NSMenu *menu, NSMutableArray *found)
       collectTornOff(sub, found);
     }
 }
+
+/*
+ * The bar stops its menus short of the status items (servers with
+ * WS_SERVER_STATUS_ITEMS). WindowServer gives the bar the display's
+ * whole width and puts the items above its right end; it says how far
+ * they reach in (ws_status_items_width()). A menu title there would be
+ * cut off by the items, or show between them. libs-gui lays the bar's
+ * titles out from the left whatever the width, so the backend makes
+ * the bar's NSMenuView a NextBSDMenuBarView (the same object, with no
+ * instance variables of its own: only its class changes), which leaves
+ * out the titles that don't fit before the items: from the first one
+ * that would reach under them on, they aren't drawn, the bar's
+ * background is, and a click there opens no menu. They come back as
+ * soon as there's room, when an item goes away.
+ */
+static CGFloat statusItemsWidth = 0;
+
+@interface NextBSDMenuBarView : NSMenuView
+@end
+
+@implementation NextBSDMenuBarView
+
+/* The first title that doesn't fit, or NSNotFound. */
+- (NSUInteger) _firstLeftOut
+{
+  CGFloat    end = NSWidth([self bounds]) - statusItemsWidth;
+  NSUInteger i, n = [[self menu] numberOfItems];
+
+  if (statusItemsWidth <= 0)
+    return NSNotFound;
+  for (i = 0; i < n; i++)
+    if (NSMaxX([self rectOfItemAtIndex: i]) > end)
+      return i;
+  return NSNotFound;
+}
+
+- (NSInteger) indexOfItemAtPoint: (NSPoint)point
+{
+  NSInteger  i = [super indexOfItemAtPoint: point];
+  NSUInteger cut = [self _firstLeftOut];
+
+  return (cut != NSNotFound && i >= (NSInteger)cut) ? -1 : i;
+}
+
+- (void) drawRect: (NSRect)rect
+{
+  NSUInteger cut = [self _firstLeftOut];
+  NSRect     b = [self bounds];
+  CGFloat    x;
+  NSRect     left, right;
+
+  if (cut == NSNotFound)
+    {
+      [super drawRect: rect];
+      return;
+    }
+  x = NSMinX([self rectOfItemAtIndex: cut]);
+  left = NSIntersectionRect(rect, NSMakeRect(NSMinX(b), NSMinY(b),
+					     x - NSMinX(b), NSHeight(b)));
+  right = NSIntersectionRect(rect, NSMakeRect(x, NSMinY(b),
+					      NSMaxX(b) - x, NSHeight(b)));
+  if (!NSIsEmptyRect(left))
+    {
+      [NSGraphicsContext saveGraphicsState];
+      NSRectClip(left);
+      [super drawRect: left];
+      [NSGraphicsContext restoreGraphicsState];
+    }
+  if (!NSIsEmptyRect(right))
+    {
+      [NSGraphicsContext saveGraphicsState];
+      NSRectClip(right);
+      [[GSTheme theme] drawBackgroundForMenuView: self
+				       withFrame: b
+				       dirtyRect: right
+				      horizontal: YES];
+      [NSGraphicsContext restoreGraphicsState];
+    }
+}
+
+@end
 
 @implementation NextBSDServer (MenuStyle)
 
@@ -528,11 +620,60 @@ collectTornOff(NSMenu *menu, NSMutableArray *found)
       if (height < 1)
 	height = (int)ceil([NSMenuView menuBarHeight]);
     }
+#ifdef WS_SERVER_STATUS_ITEMS
+  /* Name the bar window too: WindowServer puts it on the menu bar's
+     level, along the main display's top, and shows it while the app is
+     active, swapping it with the outgoing app's in one frame. A bar
+     not made yet is named when it's ordered in (-orderwindow:::). */
+  if (ws_server_flags(conn) & WS_SERVER_STATUS_ITEMS)
+    {
+      int win = height > 0
+	? (int)[[[main menuRepresentation] window] windowNumber] : 0;
+
+      /* Its titles stop short of the status items. */
+      if (height > 0
+	  && [[main menuRepresentation] class] == [NSMenuView class])
+	object_setClass([main menuRepresentation], [NextBSDMenuBarView class]);
+
+      if (height > 0 && win == 0)
+	return;
+      if (height == reportedMenuBar && win == reportedMenuBarWindow)
+	return;
+      NSDebugLLog(@"NextBSD", @"menu bar window %d, %d pixels", win, height);
+      if (ws_set_menu_bar_window(conn, (uint32_t)(win != 0 ? win
+					     : reportedMenuBarWindow),
+				 (uint32_t)height) == 0)
+	{
+	  reportedMenuBar = height;
+	  reportedMenuBarWindow = win;
+	}
+      return;
+    }
+#endif
   if (height == reportedMenuBar)
     return;
   reportedMenuBar = height;
   NSDebugLLog(@"NextBSD", @"menu bar %d pixels", height);
   ws_set_menu_bar(conn, (uint32_t)height);
+#endif
+}
+
+- (void) _statusItemsWidthChanged
+{
+#ifdef WS_SERVER_STATUS_ITEMS
+  CGFloat  width;
+  NSMenu  *main = [NSApp mainMenu];
+
+  if (conn == NULL || (ws_server_flags(conn) & WS_SERVER_STATUS_ITEMS) == 0)
+    return;
+  width = ws_status_items_width(conn);
+  if (width == statusItemsWidth)
+    return;
+  NSDebugLLog(@"NextBSD", @"status items %g points in from the bar's end",
+	      width);
+  statusItemsWidth = width;
+  if ([[main menuRepresentation] isKindOfClass: [NextBSDMenuBarView class]])
+    [[main menuRepresentation] setNeedsDisplay: YES];
 #endif
 }
 
