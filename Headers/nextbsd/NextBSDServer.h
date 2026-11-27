@@ -161,6 +161,10 @@ typedef struct nextbsd_window
 {
   int		 number;	/* the WindowServer window id */
   NSRect	 frame;		/* GNUstep screen coordinates */
+  NSRect	 postedFrame;	/* the frame of a move or resize event
+				   -_notifyFrame:post: posted that libs-gui
+				   may not have handled yet */
+  BOOL		 framePosted;	/* postedFrame is set */
   int		 level;
   int		 serverLevel;	/* the level WindowServer has (-_serverLevel:) */
   uint32_t	 flags;		/* WS_WINDOW_* last sent to the server */

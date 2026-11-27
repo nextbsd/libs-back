@@ -868,6 +868,23 @@ windowScreen(NSWindow *win)
   if (nswin == nil)
     return;
   old = [nswin frame];
+  /* A move or resize posted earlier and not handled yet is the frame
+     libs-gui is going to have: compare with that. Comparing with the
+     NSWindow's frame alone, a frame that only takes the window back
+     to where it is now would send nothing, and the posted event, handled
+     afterwards, would leave the NSWindow at the frame in between. A new
+     app's menu bar did this: WindowServer moved it out from under the
+     menu bar strip (posted), then put it back on the strip (nothing
+     sent), and libs-gui kept it a bar's height below the real bar, so no
+     click on it found a title (nextbsd/nextbsd#739). Once the NSWindow
+     has the posted frame, the event has been handled. */
+  if (w->framePosted)
+    {
+      if (NSEqualRects(old, w->postedFrame))
+	w->framePosted = NO;
+      else
+	old = w->postedFrame;
+    }
   /* The size the window draws at: its surface's, made from w->frame when
      libs-gui last handled a resize. A resize this sent earlier may have
      been handled after the app placed the window again at another size
@@ -906,9 +923,16 @@ windowScreen(NSWindow *win)
   if (ev == nil)
     return;
   if (post)
-    [self postEvent: ev atStart: NO];
+    {
+      [self postEvent: ev atStart: NO];
+      w->postedFrame = w->frame;
+      w->framePosted = YES;
+    }
   else
-    [nswin sendEvent: ev];
+    {
+      [nswin sendEvent: ev];
+      w->framePosted = NO;
+    }
 }
 
 /* ---- screens ---- */
